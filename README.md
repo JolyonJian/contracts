@@ -25,7 +25,7 @@ DEX: 20个，去中心化交易所
 MEV Bot: 8个，套利机器人，地址多以0x000000...开头，可能为了减少gas费用
 NFTM: 2个， OpenSea NFT交易市场
 ICO: 2个，众筹合约，均疑似庞氏骗局
-GAME： 2个，EasyClub金融游戏，Dice2Win博彩游戏
+GAME: 2个，EasyClub金融游戏，Dice2Win博彩游戏
 NFT: 1个，CryptoKitties
 其他类型单独标注
 ```
