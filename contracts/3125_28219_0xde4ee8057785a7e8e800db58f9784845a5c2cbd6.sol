@@ -1,7 +1,7 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "./Address.sol": {
+{{
+  "language": "Solidity",
+  "sources": {
+    "./Address.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 
 pragma solidity ^0.7.0;
@@ -143,9 +143,9 @@ library Address {
         }
     }
 }
-"
-    },
-    "./Context.sol": {
+"
+    },
+    "./Context.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 
 pragma solidity ^0.7.0;
@@ -170,9 +170,9 @@ abstract contract Context {
         return msg.data;
     }
 }
-"
-    },
-    "./Dexe.sol": {
+"
+    },
+    "./Dexe.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 pragma solidity 0.7.0;
 pragma experimental ABIEncoderV2;
@@ -923,9 +923,9 @@ contract Dexe is Ownable, ERC20Burnable, IDexe {
         return _usersInfo[_holder];
     }
 }
-"
-    },
-	"./ERC20.sol": {
+"
+    },
+	"./ERC20.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 
 pragma solidity ^0.7.0;
@@ -1233,9 +1233,9 @@ contract ERC20 is Context, IERC20 {
      */
     function _beforeTokenTransfer(address from, address to, uint256 amount) internal virtual { }
 }
-"
-    },
-    "./ERC20Burnable.sol": {
+"
+    },
+    "./ERC20Burnable.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 
 pragma solidity ^0.7.0;
@@ -1278,9 +1278,9 @@ abstract contract ERC20Burnable is Context, ERC20 {
         _burn(account, amount);
     }
 }
-"
-    },
-	"./IDexe.sol": {
+"
+    },
+	"./IDexe.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 pragma solidity 0.7.0;
 pragma experimental ABIEncoderV2;
@@ -1317,9 +1317,9 @@ interface IDexe is IERC20 {
     function getAverageBalance(address _holder) external view returns(uint);
     function firstBalanceChange(address _holder) external view returns(uint);
 }
-"
-    },
-	"./IERC20.sol": {
+"
+    },
+	"./IERC20.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 
 pragma solidity ^0.7.0;
@@ -1397,9 +1397,9 @@ interface IERC20 {
      */
     event Approval(address indexed owner, address indexed spender, uint256 value);
 }
-"
-    },
-	"./Ownable.sol": {
+"
+    },
+	"./Ownable.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 
 pragma solidity ^0.7.0;
@@ -1468,9 +1468,9 @@ contract Ownable is Context {
         _owner = newOwner;
     }
 }
-"
-    },
-	"./IPriceFeed.sol": {
+"
+    },
+	"./IPriceFeed.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 pragma solidity >= 0.6.5 <= 0.7.0;
 
@@ -1479,9 +1479,9 @@ interface IPriceFeed {
     function consult() external view returns (uint);
     function updateAndConsult() external returns (uint);
 }
-"
-    },
-	"./SafeMath.sol": {
+"
+    },
+	"./SafeMath.sol": {
 	  "content": "// SPDX-License-Identifier: MIT
 
 pragma solidity ^0.7.0;
@@ -1641,30 +1641,30 @@ library SafeMath {
         return a % b;
     }
 }
-"
-    }
-  },
-  "settings": {
-   "evmVersion":"istanbul",
-   "libraries":{
-   },
-   "metadata":{
-      "bytecodeHash":"ipfs"
-   },
-   "optimizer":{
-      "enabled":true,
-      "runs":10000
-   },
-   "remappings":[],
-   "outputSelection": {
-      "*": {
-        "*": [
-			"metadata",
-			"abi",
-			"evm.deployedBytecode",
-			"evm.bytecode"
-        ]
-      }
-    }
-  }
+"
+    }
+  },
+  "settings": {
+   "evmVersion":"istanbul",
+   "libraries":{
+   },
+   "metadata":{
+      "bytecodeHash":"ipfs"
+   },
+   "optimizer":{
+      "enabled":true,
+      "runs":10000
+   },
+   "remappings":[],
+   "outputSelection": {
+      "*": {
+        "*": [
+			"metadata",
+			"abi",
+			"evm.deployedBytecode",
+			"evm.bytecode"
+        ]
+      }
+    }
+  }
 }}

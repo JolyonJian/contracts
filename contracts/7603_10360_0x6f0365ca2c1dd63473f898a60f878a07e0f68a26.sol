@@ -1161,149 +1161,149 @@ abstract contract ReentrancyGuard {
 }
 
 // 
-/**
- * @title TDBC contract v1
- * @author @darkp0rt
- *     _____            ____             .-^-.
- *   |_   _|___ ___   |    \ ___ ___    '"'|`"`
- *     | | | . | . |  |  |  | . | . |      j
- *     |_| |___|  _|  |____/|___|_  |
- *             |_|              |___|
- *    _____             _      _____ _     _   
- *   | __  |___ ___ ___| |_   |     | |_ _| |_ 
- *   | __ -| -_| .'|  _|   |  |   --| | | | . |
- *   |_____|___|__,|___|_|_|  |_____|_|___|___|
+/**
+ * @title TDBC contract v1
+ * @author @darkp0rt
+ *     _____            ____             .-^-.
+ *   |_   _|___ ___   |    \ ___ ___    '"'|`"`
+ *     | | | . | . |  |  |  | . | . |      j
+ *     |_| |___|  _|  |____/|___|_  |
+ *             |_|              |___|
+ *    _____             _      _____ _     _   
+ *   | __  |___ ___ ___| |_   |     | |_ _| |_ 
+ *   | __ -| -_| .'|  _|   |  |   --| | | | . |
+ *   |_____|___|__,|___|_|_|  |_____|_|___|___|
  */
-contract TopDogBeachClub is ERC721Enumerable, Ownable, ReentrancyGuard {
-    /// @dev Solidity 0.8.0+ gives us safe math ops by default so there is no need to use SafeMath == cheaper gas
-
-    enum FounderMemberClaimStatus { Invalid, Unclaimed, Claimed }
-
-    uint256 private constant MAX_DOGS = 8000;
-    uint256 private constant DEV_DOGGOS = 50;
-    uint256 private constant DOGS_PER_TX = 10;
-    uint256 private constant PRESALE_MAX_DOGGOS = 500;
-    uint256 private constant DOG_PRICE = 0.08 ether;
-
-    string public TDBC_PROVENANCE;
-    bool private _isPublicSaleActive = false;
-    bool private _isPreSaleActive = false;
-    mapping (uint256 => uint256) private _doggoBirthdays;
-    mapping (address => FounderMemberClaimStatus) private _foundingMemberClaims;
-    string private _baseTokenURI;
-
-    constructor (string memory name, string memory symbol, string memory baseTokenURI) ERC721(name, symbol) {
-        _baseTokenURI = baseTokenURI;
-    }
-
-    function withdraw() public onlyOwner {
-        require(payable(msg.sender).send(address(this).balance), ":-(");
-    }
-
-    function togglePublicSale() external onlyOwner {
-        _isPublicSaleActive = !_isPublicSaleActive;
-    }
-
-    function togglePreSale() external onlyOwner {
-        _isPreSaleActive = !_isPreSaleActive;
-    }
-
-    function isPublicSaleActive() external view returns (bool status) {
-        return _isPublicSaleActive;
-    }
-
-    function isPreSaleActive() external view returns (bool status) {
-        return _isPreSaleActive;
-    }
-
-    /*
-    * A SHA256 hash representing all 8000 dogs. Will be set once all 8k are born
-    */
-    function setProvenanceHash(string memory provenanceHash) public onlyOwner {
-        TDBC_PROVENANCE = provenanceHash;
-    }
-
-    function setBaseTokenURI(string memory baseTokenURI) public onlyOwner {
-        _baseTokenURI = baseTokenURI;
-    }
-
-    /*
-    * Message Jakub "Belly rub pls" on Discord
-    */
-    function mintPublic(uint256 amount) external payable nonReentrant() {
-        require(_isPublicSaleActive, "Public sale is not active");
-        require(amount > 0 && amount <= DOGS_PER_TX, "You can't mint that many doggos");
-        require(totalSupply() + amount <= MAX_DOGS, "Mint would exceed max supply of doggos");
-        require(msg.value == amount * DOG_PRICE, "You didn't send the right amount of eth");
-        
-        _mintMultiple(msg.sender, amount);
-    }
-
-    function mintFoundingMember() external payable nonReentrant() {
-        require(_isPreSaleActive, "Pre-sale is not active");
-        require(_foundingMemberClaims[msg.sender] != FounderMemberClaimStatus.Claimed, "You've already claimed your doggo");
-        require(_foundingMemberClaims[msg.sender] == FounderMemberClaimStatus.Unclaimed, "You are not a founding member");
-        require(totalSupply() + 1 < PRESALE_MAX_DOGGOS, "Mint would exceed max pre-sale doggos"); // should never happen but a saftey net
-        require(totalSupply() + 1 <= MAX_DOGS, "Mint would exceed max supply of doggos");
-        require(msg.value == 1 * DOG_PRICE, "You didn't send the right amount of eth");
-        
-        _mintMultiple(msg.sender, 1);
-        _foundingMemberClaims[msg.sender] = FounderMemberClaimStatus.Claimed;
-    }
-
-    function addFoundingMembers(address[] memory members) external onlyOwner {
-        for (uint256 i = 0; i < members.length; i++) {
-            _foundingMemberClaims[members[i]] = FounderMemberClaimStatus.Unclaimed;
-        }
-    }
-
-    /*
-    * Sets aside some doggos for the dev team, used for competitions, giveaways and mods memberships
-    */
-    function reserve() external onlyOwner {
-        require(balanceOf(msg.sender) < DEV_DOGGOS, ":-(");
-        _mintMultiple(msg.sender, DEV_DOGGOS);
-    }
-
-    /**
-     * @notice Returns a list of all tokenIds assigned to an address - used by the TDBC website
-     * Taken from https://ethereum.stackexchange.com/questions/54959/list-erc721-tokens-owned-by-a-user-on-a-web-page
-     * @param user get tokens of a given user
-     */
-    function tokensOfOwner(address user) external view returns (uint256[] memory ownerTokens) {
-        uint256 tokenCount = balanceOf(user);
-
-        if (tokenCount == 0) {
-            return new uint256[](0);
-        } else {
-            uint256[] memory output = new uint256[](tokenCount);
-
-            for (uint256 index = 0; index < tokenCount; index++) {
-                output[index] = tokenOfOwnerByIndex(user, index);
-            }
-            
-            return output;
-        }
-    }
-
-    /*
-     * I hope you bought cake?
-    */
-    function getBirthday(uint256 tokenId) external view returns (uint256) {
-        require(tokenId < totalSupply(), "That doggo has not been born yet :-(");
-
-        return _doggoBirthdays[tokenId];
-    }
-
-    function _mintMultiple(address owner, uint256 amount) private {
-        for (uint256 i = 0; i < amount; i++) {
-            uint256 tokenId = totalSupply();
-            _doggoBirthdays[tokenId] = block.timestamp;
-            _safeMint(owner, tokenId);
-        }
-    }
-
-    function _baseURI() internal view virtual override returns (string memory) {
-        return _baseTokenURI;
-    }
+contract TopDogBeachClub is ERC721Enumerable, Ownable, ReentrancyGuard {
+    /// @dev Solidity 0.8.0+ gives us safe math ops by default so there is no need to use SafeMath == cheaper gas
+
+    enum FounderMemberClaimStatus { Invalid, Unclaimed, Claimed }
+
+    uint256 private constant MAX_DOGS = 8000;
+    uint256 private constant DEV_DOGGOS = 50;
+    uint256 private constant DOGS_PER_TX = 10;
+    uint256 private constant PRESALE_MAX_DOGGOS = 500;
+    uint256 private constant DOG_PRICE = 0.08 ether;
+
+    string public TDBC_PROVENANCE;
+    bool private _isPublicSaleActive = false;
+    bool private _isPreSaleActive = false;
+    mapping (uint256 => uint256) private _doggoBirthdays;
+    mapping (address => FounderMemberClaimStatus) private _foundingMemberClaims;
+    string private _baseTokenURI;
+
+    constructor (string memory name, string memory symbol, string memory baseTokenURI) ERC721(name, symbol) {
+        _baseTokenURI = baseTokenURI;
+    }
+
+    function withdraw() public onlyOwner {
+        require(payable(msg.sender).send(address(this).balance), ":-(");
+    }
+
+    function togglePublicSale() external onlyOwner {
+        _isPublicSaleActive = !_isPublicSaleActive;
+    }
+
+    function togglePreSale() external onlyOwner {
+        _isPreSaleActive = !_isPreSaleActive;
+    }
+
+    function isPublicSaleActive() external view returns (bool status) {
+        return _isPublicSaleActive;
+    }
+
+    function isPreSaleActive() external view returns (bool status) {
+        return _isPreSaleActive;
+    }
+
+    /*
+    * A SHA256 hash representing all 8000 dogs. Will be set once all 8k are born
+    */
+    function setProvenanceHash(string memory provenanceHash) public onlyOwner {
+        TDBC_PROVENANCE = provenanceHash;
+    }
+
+    function setBaseTokenURI(string memory baseTokenURI) public onlyOwner {
+        _baseTokenURI = baseTokenURI;
+    }
+
+    /*
+    * Message Jakub "Belly rub pls" on Discord
+    */
+    function mintPublic(uint256 amount) external payable nonReentrant() {
+        require(_isPublicSaleActive, "Public sale is not active");
+        require(amount > 0 && amount <= DOGS_PER_TX, "You can't mint that many doggos");
+        require(totalSupply() + amount <= MAX_DOGS, "Mint would exceed max supply of doggos");
+        require(msg.value == amount * DOG_PRICE, "You didn't send the right amount of eth");
+        
+        _mintMultiple(msg.sender, amount);
+    }
+
+    function mintFoundingMember() external payable nonReentrant() {
+        require(_isPreSaleActive, "Pre-sale is not active");
+        require(_foundingMemberClaims[msg.sender] != FounderMemberClaimStatus.Claimed, "You've already claimed your doggo");
+        require(_foundingMemberClaims[msg.sender] == FounderMemberClaimStatus.Unclaimed, "You are not a founding member");
+        require(totalSupply() + 1 < PRESALE_MAX_DOGGOS, "Mint would exceed max pre-sale doggos"); // should never happen but a saftey net
+        require(totalSupply() + 1 <= MAX_DOGS, "Mint would exceed max supply of doggos");
+        require(msg.value == 1 * DOG_PRICE, "You didn't send the right amount of eth");
+        
+        _mintMultiple(msg.sender, 1);
+        _foundingMemberClaims[msg.sender] = FounderMemberClaimStatus.Claimed;
+    }
+
+    function addFoundingMembers(address[] memory members) external onlyOwner {
+        for (uint256 i = 0; i < members.length; i++) {
+            _foundingMemberClaims[members[i]] = FounderMemberClaimStatus.Unclaimed;
+        }
+    }
+
+    /*
+    * Sets aside some doggos for the dev team, used for competitions, giveaways and mods memberships
+    */
+    function reserve() external onlyOwner {
+        require(balanceOf(msg.sender) < DEV_DOGGOS, ":-(");
+        _mintMultiple(msg.sender, DEV_DOGGOS);
+    }
+
+    /**
+     * @notice Returns a list of all tokenIds assigned to an address - used by the TDBC website
+     * Taken from https://ethereum.stackexchange.com/questions/54959/list-erc721-tokens-owned-by-a-user-on-a-web-page
+     * @param user get tokens of a given user
+     */
+    function tokensOfOwner(address user) external view returns (uint256[] memory ownerTokens) {
+        uint256 tokenCount = balanceOf(user);
+
+        if (tokenCount == 0) {
+            return new uint256[](0);
+        } else {
+            uint256[] memory output = new uint256[](tokenCount);
+
+            for (uint256 index = 0; index < tokenCount; index++) {
+                output[index] = tokenOfOwnerByIndex(user, index);
+            }
+            
+            return output;
+        }
+    }
+
+    /*
+     * I hope you bought cake?
+    */
+    function getBirthday(uint256 tokenId) external view returns (uint256) {
+        require(tokenId < totalSupply(), "That doggo has not been born yet :-(");
+
+        return _doggoBirthdays[tokenId];
+    }
+
+    function _mintMultiple(address owner, uint256 amount) private {
+        for (uint256 i = 0; i < amount; i++) {
+            uint256 tokenId = totalSupply();
+            _doggoBirthdays[tokenId] = block.timestamp;
+            _safeMint(owner, tokenId);
+        }
+    }
+
+    function _baseURI() internal view virtual override returns (string memory) {
+        return _baseTokenURI;
+    }
 }

@@ -2,289 +2,289 @@
 
 // File: contracts\interfaces\IRouter01.sol
 
-pragma solidity >=0.5.0;
-
-interface IRouter01 {
-	function factory() external pure returns (address);
-	function bDeployer() external pure returns (address);
-	function cDeployer() external pure returns (address);
-	function WETH() external pure returns (address);
-	
-	function mint(address poolToken, uint amount, address to, uint deadline) external returns (uint tokens);
-	function mintETH(address poolToken, address to, uint deadline) external payable returns (uint tokens);
-	function mintCollateral(address poolToken, uint amount, address to, uint deadline, bytes calldata permitData) external returns (uint tokens);
-	
-	function redeem(address poolToken, uint tokens, address to, uint deadline, bytes calldata permitData) external returns (uint amount);
-	function redeemETH(address poolToken, uint tokens, address to, uint deadline, bytes calldata permitData) external returns (uint amountETH);
-
-	function borrow(address borrowable, uint amount, address to, uint deadline, bytes calldata permitData) external;
-	function borrowETH(address borrowable, uint amountETH, address to, uint deadline, bytes calldata permitData) external;
-	
-	function repay(address borrowable, uint amountMax, address borrower, uint deadline) external returns (uint amount);
-	function repayETH(address borrowable, address borrower, uint deadline) external payable returns (uint amountETH);
-
-	function liquidate(address borrowable, uint amountMax, address borrower, address to, uint deadline) external returns (uint amount, uint seizeTokens);
-	function liquidateETH(address borrowable, address borrower, address to, uint deadline) external payable returns (uint amountETH, uint seizeTokens);
-	
-	function leverage(
-		address uniswapV2Pair, uint amountADesired, uint amountBDesired, uint amountAMin, uint amountBMin,
-		address to, uint deadline, bytes calldata permitDataA, bytes calldata permitDataB
-	) external;
-	function deleverage(
-		address uniswapV2Pair, uint redeemTokens, uint amountAMin, uint amountBMin, uint deadline, bytes calldata permitData
-	) external;
-	
-	function getBorrowable(address uniswapV2Pair, uint8 index) external view returns (address borrowable);
-	function getCollateral(address uniswapV2Pair) external view returns (address collateral);
-	function getLendingPool(address uniswapV2Pair) external view returns (address collateral, address borrowableA, address borrowableB);
+pragma solidity >=0.5.0;
+
+interface IRouter01 {
+	function factory() external pure returns (address);
+	function bDeployer() external pure returns (address);
+	function cDeployer() external pure returns (address);
+	function WETH() external pure returns (address);
+	
+	function mint(address poolToken, uint amount, address to, uint deadline) external returns (uint tokens);
+	function mintETH(address poolToken, address to, uint deadline) external payable returns (uint tokens);
+	function mintCollateral(address poolToken, uint amount, address to, uint deadline, bytes calldata permitData) external returns (uint tokens);
+	
+	function redeem(address poolToken, uint tokens, address to, uint deadline, bytes calldata permitData) external returns (uint amount);
+	function redeemETH(address poolToken, uint tokens, address to, uint deadline, bytes calldata permitData) external returns (uint amountETH);
+
+	function borrow(address borrowable, uint amount, address to, uint deadline, bytes calldata permitData) external;
+	function borrowETH(address borrowable, uint amountETH, address to, uint deadline, bytes calldata permitData) external;
+	
+	function repay(address borrowable, uint amountMax, address borrower, uint deadline) external returns (uint amount);
+	function repayETH(address borrowable, address borrower, uint deadline) external payable returns (uint amountETH);
+
+	function liquidate(address borrowable, uint amountMax, address borrower, address to, uint deadline) external returns (uint amount, uint seizeTokens);
+	function liquidateETH(address borrowable, address borrower, address to, uint deadline) external payable returns (uint amountETH, uint seizeTokens);
+	
+	function leverage(
+		address uniswapV2Pair, uint amountADesired, uint amountBDesired, uint amountAMin, uint amountBMin,
+		address to, uint deadline, bytes calldata permitDataA, bytes calldata permitDataB
+	) external;
+	function deleverage(
+		address uniswapV2Pair, uint redeemTokens, uint amountAMin, uint amountBMin, uint deadline, bytes calldata permitData
+	) external;
+	
+	function getBorrowable(address uniswapV2Pair, uint8 index) external view returns (address borrowable);
+	function getCollateral(address uniswapV2Pair) external view returns (address collateral);
+	function getLendingPool(address uniswapV2Pair) external view returns (address collateral, address borrowableA, address borrowableB);
 }
 
 // File: contracts\interfaces\IPoolToken.sol
 
-pragma solidity >=0.5.0;
-
-interface IPoolToken {
-
-	/*** Impermax ERC20 ***/
-	
-	event Transfer(address indexed from, address indexed to, uint value);
-	event Approval(address indexed owner, address indexed spender, uint value);
-	
-	function name() external pure returns (string memory);
-	function symbol() external pure returns (string memory);
-	function decimals() external pure returns (uint8);
-	function totalSupply() external view returns (uint);
-	function balanceOf(address owner) external view returns (uint);
-	function allowance(address owner, address spender) external view returns (uint);
-	function approve(address spender, uint value) external returns (bool);
-	function transfer(address to, uint value) external returns (bool);
-	function transferFrom(address from, address to, uint value) external returns (bool);
-	
-	function DOMAIN_SEPARATOR() external view returns (bytes32);
-	function PERMIT_TYPEHASH() external pure returns (bytes32);
-	function nonces(address owner) external view returns (uint);
-	function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
-	
-	/*** Pool Token ***/
-	
-	event Mint(address indexed sender, address indexed minter, uint mintAmount, uint mintTokens);
-	event Redeem(address indexed sender, address indexed redeemer, uint redeemAmount, uint redeemTokens);
-	event Sync(uint totalBalance);
-	
-	function underlying() external view returns (address);
-	function factory() external view returns (address);
-	function totalBalance() external view returns (uint);
-	function MINIMUM_LIQUIDITY() external pure returns (uint);
-
-	function exchangeRate() external returns (uint);
-	function mint(address minter) external returns (uint mintTokens);
-	function redeem(address redeemer) external returns (uint redeemAmount);
-	function skim(address to) external;
-	function sync() external;
-	
-	function _setFactory() external;
+pragma solidity >=0.5.0;
+
+interface IPoolToken {
+
+	/*** Impermax ERC20 ***/
+	
+	event Transfer(address indexed from, address indexed to, uint value);
+	event Approval(address indexed owner, address indexed spender, uint value);
+	
+	function name() external pure returns (string memory);
+	function symbol() external pure returns (string memory);
+	function decimals() external pure returns (uint8);
+	function totalSupply() external view returns (uint);
+	function balanceOf(address owner) external view returns (uint);
+	function allowance(address owner, address spender) external view returns (uint);
+	function approve(address spender, uint value) external returns (bool);
+	function transfer(address to, uint value) external returns (bool);
+	function transferFrom(address from, address to, uint value) external returns (bool);
+	
+	function DOMAIN_SEPARATOR() external view returns (bytes32);
+	function PERMIT_TYPEHASH() external pure returns (bytes32);
+	function nonces(address owner) external view returns (uint);
+	function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+	
+	/*** Pool Token ***/
+	
+	event Mint(address indexed sender, address indexed minter, uint mintAmount, uint mintTokens);
+	event Redeem(address indexed sender, address indexed redeemer, uint redeemAmount, uint redeemTokens);
+	event Sync(uint totalBalance);
+	
+	function underlying() external view returns (address);
+	function factory() external view returns (address);
+	function totalBalance() external view returns (uint);
+	function MINIMUM_LIQUIDITY() external pure returns (uint);
+
+	function exchangeRate() external returns (uint);
+	function mint(address minter) external returns (uint mintTokens);
+	function redeem(address redeemer) external returns (uint redeemAmount);
+	function skim(address to) external;
+	function sync() external;
+	
+	function _setFactory() external;
 }
 
 // File: contracts\interfaces\IBorrowable.sol
 
-pragma solidity >=0.5.0;
-
-interface IBorrowable {
-
-	/*** Impermax ERC20 ***/
-	
-	event Transfer(address indexed from, address indexed to, uint value);
-	event Approval(address indexed owner, address indexed spender, uint value);
-	
-	function name() external pure returns (string memory);
-	function symbol() external pure returns (string memory);
-	function decimals() external pure returns (uint8);
-	function totalSupply() external view returns (uint);
-	function balanceOf(address owner) external view returns (uint);
-	function allowance(address owner, address spender) external view returns (uint);
-	function approve(address spender, uint value) external returns (bool);
-	function transfer(address to, uint value) external returns (bool);
-	function transferFrom(address from, address to, uint value) external returns (bool);
-	
-	function DOMAIN_SEPARATOR() external view returns (bytes32);
-	function PERMIT_TYPEHASH() external pure returns (bytes32);
-	function nonces(address owner) external view returns (uint);
-	function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
-	
-	/*** Pool Token ***/
-	
-	event Mint(address indexed sender, address indexed minter, uint mintAmount, uint mintTokens);
-	event Redeem(address indexed sender, address indexed redeemer, uint redeemAmount, uint redeemTokens);
-	event Sync(uint totalBalance);
-	
-	function underlying() external view returns (address);
-	function factory() external view returns (address);
-	function totalBalance() external view returns (uint);
-	function MINIMUM_LIQUIDITY() external pure returns (uint);
-
-	function exchangeRate() external returns (uint);
-	function mint(address minter) external returns (uint mintTokens);
-	function redeem(address redeemer) external returns (uint redeemAmount);
-	function skim(address to) external;
-	function sync() external;
-	
-	function _setFactory() external;
-	
-	/*** Borrowable ***/
-
-	event BorrowApproval(address indexed owner, address indexed spender, uint value);
-	event Borrow(address indexed sender, address indexed borrower, address indexed receiver, uint borrowAmount, uint repayAmount, uint accountBorrowsPrior, uint accountBorrows, uint totalBorrows);
-	event Liquidate(address indexed sender, address indexed borrower, address indexed liquidator, uint seizeTokens, uint repayAmount, uint accountBorrowsPrior, uint accountBorrows, uint totalBorrows);
-	
-	function BORROW_FEE() external pure returns (uint);
-	function collateral() external view returns (address);
-	function reserveFactor() external view returns (uint);
-	function exchangeRateLast() external view returns (uint);
-	function borrowIndex() external view returns (uint);
-	function totalBorrows() external view returns (uint);
-	function borrowAllowance(address owner, address spender) external view returns (uint);
-	function borrowBalance(address borrower) external view returns (uint);	
-	function borrowTracker() external view returns (address);
-	
-	function BORROW_PERMIT_TYPEHASH() external pure returns (bytes32);
-	function borrowApprove(address spender, uint256 value) external returns (bool);
-	function borrowPermit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
-	function borrow(address borrower, address receiver, uint borrowAmount, bytes calldata data) external;
-	function liquidate(address borrower, address liquidator) external returns (uint seizeTokens);
-	function trackBorrow(address borrower) external;
-	
-	/*** Borrowable Interest Rate Model ***/
-
-	event AccrueInterest(uint interestAccumulated, uint borrowIndex, uint totalBorrows);
-	event CalculateKink(uint kinkRate);
-	event CalculateBorrowRate(uint borrowRate);
-	
-	function KINK_BORROW_RATE_MAX() external pure returns (uint);
-	function KINK_BORROW_RATE_MIN() external pure returns (uint);
-	function KINK_MULTIPLIER() external pure returns (uint);
-	function borrowRate() external view returns (uint);
-	function kinkBorrowRate() external view returns (uint);
-	function kinkUtilizationRate() external view returns (uint);
-	function adjustSpeed() external view returns (uint);
-	function rateUpdateTimestamp() external view returns (uint32);
-	function accrualTimestamp() external view returns (uint32);
-	
-	function accrueInterest() external;
-	
-	/*** Borrowable Setter ***/
-
-	event NewReserveFactor(uint newReserveFactor);
-	event NewKinkUtilizationRate(uint newKinkUtilizationRate);
-	event NewAdjustSpeed(uint newAdjustSpeed);
-	event NewBorrowTracker(address newBorrowTracker);
-
-	function RESERVE_FACTOR_MAX() external pure returns (uint);
-	function KINK_UR_MIN() external pure returns (uint);
-	function KINK_UR_MAX() external pure returns (uint);
-	function ADJUST_SPEED_MIN() external pure returns (uint);
-	function ADJUST_SPEED_MAX() external pure returns (uint);
-	
-	function _initialize (
-		string calldata _name, 
-		string calldata _symbol,
-		address _underlying, 
-		address _collateral
-	) external;
-	function _setReserveFactor(uint newReserveFactor) external;
-	function _setKinkUtilizationRate(uint newKinkUtilizationRate) external;
-	function _setAdjustSpeed(uint newAdjustSpeed) external;
-	function _setBorrowTracker(address newBorrowTracker) external;
+pragma solidity >=0.5.0;
+
+interface IBorrowable {
+
+	/*** Impermax ERC20 ***/
+	
+	event Transfer(address indexed from, address indexed to, uint value);
+	event Approval(address indexed owner, address indexed spender, uint value);
+	
+	function name() external pure returns (string memory);
+	function symbol() external pure returns (string memory);
+	function decimals() external pure returns (uint8);
+	function totalSupply() external view returns (uint);
+	function balanceOf(address owner) external view returns (uint);
+	function allowance(address owner, address spender) external view returns (uint);
+	function approve(address spender, uint value) external returns (bool);
+	function transfer(address to, uint value) external returns (bool);
+	function transferFrom(address from, address to, uint value) external returns (bool);
+	
+	function DOMAIN_SEPARATOR() external view returns (bytes32);
+	function PERMIT_TYPEHASH() external pure returns (bytes32);
+	function nonces(address owner) external view returns (uint);
+	function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+	
+	/*** Pool Token ***/
+	
+	event Mint(address indexed sender, address indexed minter, uint mintAmount, uint mintTokens);
+	event Redeem(address indexed sender, address indexed redeemer, uint redeemAmount, uint redeemTokens);
+	event Sync(uint totalBalance);
+	
+	function underlying() external view returns (address);
+	function factory() external view returns (address);
+	function totalBalance() external view returns (uint);
+	function MINIMUM_LIQUIDITY() external pure returns (uint);
+
+	function exchangeRate() external returns (uint);
+	function mint(address minter) external returns (uint mintTokens);
+	function redeem(address redeemer) external returns (uint redeemAmount);
+	function skim(address to) external;
+	function sync() external;
+	
+	function _setFactory() external;
+	
+	/*** Borrowable ***/
+
+	event BorrowApproval(address indexed owner, address indexed spender, uint value);
+	event Borrow(address indexed sender, address indexed borrower, address indexed receiver, uint borrowAmount, uint repayAmount, uint accountBorrowsPrior, uint accountBorrows, uint totalBorrows);
+	event Liquidate(address indexed sender, address indexed borrower, address indexed liquidator, uint seizeTokens, uint repayAmount, uint accountBorrowsPrior, uint accountBorrows, uint totalBorrows);
+	
+	function BORROW_FEE() external pure returns (uint);
+	function collateral() external view returns (address);
+	function reserveFactor() external view returns (uint);
+	function exchangeRateLast() external view returns (uint);
+	function borrowIndex() external view returns (uint);
+	function totalBorrows() external view returns (uint);
+	function borrowAllowance(address owner, address spender) external view returns (uint);
+	function borrowBalance(address borrower) external view returns (uint);	
+	function borrowTracker() external view returns (address);
+	
+	function BORROW_PERMIT_TYPEHASH() external pure returns (bytes32);
+	function borrowApprove(address spender, uint256 value) external returns (bool);
+	function borrowPermit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+	function borrow(address borrower, address receiver, uint borrowAmount, bytes calldata data) external;
+	function liquidate(address borrower, address liquidator) external returns (uint seizeTokens);
+	function trackBorrow(address borrower) external;
+	
+	/*** Borrowable Interest Rate Model ***/
+
+	event AccrueInterest(uint interestAccumulated, uint borrowIndex, uint totalBorrows);
+	event CalculateKink(uint kinkRate);
+	event CalculateBorrowRate(uint borrowRate);
+	
+	function KINK_BORROW_RATE_MAX() external pure returns (uint);
+	function KINK_BORROW_RATE_MIN() external pure returns (uint);
+	function KINK_MULTIPLIER() external pure returns (uint);
+	function borrowRate() external view returns (uint);
+	function kinkBorrowRate() external view returns (uint);
+	function kinkUtilizationRate() external view returns (uint);
+	function adjustSpeed() external view returns (uint);
+	function rateUpdateTimestamp() external view returns (uint32);
+	function accrualTimestamp() external view returns (uint32);
+	
+	function accrueInterest() external;
+	
+	/*** Borrowable Setter ***/
+
+	event NewReserveFactor(uint newReserveFactor);
+	event NewKinkUtilizationRate(uint newKinkUtilizationRate);
+	event NewAdjustSpeed(uint newAdjustSpeed);
+	event NewBorrowTracker(address newBorrowTracker);
+
+	function RESERVE_FACTOR_MAX() external pure returns (uint);
+	function KINK_UR_MIN() external pure returns (uint);
+	function KINK_UR_MAX() external pure returns (uint);
+	function ADJUST_SPEED_MIN() external pure returns (uint);
+	function ADJUST_SPEED_MAX() external pure returns (uint);
+	
+	function _initialize (
+		string calldata _name, 
+		string calldata _symbol,
+		address _underlying, 
+		address _collateral
+	) external;
+	function _setReserveFactor(uint newReserveFactor) external;
+	function _setKinkUtilizationRate(uint newKinkUtilizationRate) external;
+	function _setAdjustSpeed(uint newAdjustSpeed) external;
+	function _setBorrowTracker(address newBorrowTracker) external;
 }
 
 // File: contracts\interfaces\ICollateral.sol
 
-pragma solidity >=0.5.0;
-
-interface ICollateral {
-
-	/*** Impermax ERC20 ***/
-	
-	event Transfer(address indexed from, address indexed to, uint value);
-	event Approval(address indexed owner, address indexed spender, uint value);
-	
-	function name() external pure returns (string memory);
-	function symbol() external pure returns (string memory);
-	function decimals() external pure returns (uint8);
-	function totalSupply() external view returns (uint);
-	function balanceOf(address owner) external view returns (uint);
-	function allowance(address owner, address spender) external view returns (uint);
-	function approve(address spender, uint value) external returns (bool);
-	function transfer(address to, uint value) external returns (bool);
-	function transferFrom(address from, address to, uint value) external returns (bool);
-	
-	function DOMAIN_SEPARATOR() external view returns (bytes32);
-	function PERMIT_TYPEHASH() external pure returns (bytes32);
-	function nonces(address owner) external view returns (uint);
-	function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
-	
-	/*** Pool Token ***/
-	
-	event Mint(address indexed sender, address indexed minter, uint mintAmount, uint mintTokens);
-	event Redeem(address indexed sender, address indexed redeemer, uint redeemAmount, uint redeemTokens);
-	event Sync(uint totalBalance);
-	
-	function underlying() external view returns (address);
-	function factory() external view returns (address);
-	function totalBalance() external view returns (uint);
-	function MINIMUM_LIQUIDITY() external pure returns (uint);
-
-	function exchangeRate() external returns (uint);
-	function mint(address minter) external returns (uint mintTokens);
-	function redeem(address redeemer) external returns (uint redeemAmount);
-	function skim(address to) external;
-	function sync() external;
-	
-	function _setFactory() external;
-	
-	/*** Collateral ***/
-	
-	function borrowable0() external view returns (address);
-	function borrowable1() external view returns (address);
-	function simpleUniswapOracle() external view returns (address);
-	function safetyMarginSqrt() external view returns (uint);
-	function liquidationIncentive() external view returns (uint);
-	
-	function getPrices() external returns (uint price0, uint price1);
-	function tokensUnlocked(address from, uint value) external returns (bool);
-	function accountLiquidityAmounts(address account, uint amount0, uint amount1) external returns (uint liquidity, uint shortfall);
-	function accountLiquidity(address account) external returns (uint liquidity, uint shortfall);
-	function canBorrow(address account, address borrowable, uint accountBorrows) external returns (bool);
-	function seize(address liquidator, address borrower, uint repayAmount) external returns (uint seizeTokens);
-	function flashRedeem(address redeemer, uint redeemAmount, bytes calldata data) external;
-	
-	/*** Collateral Setter ***/
-	
-	event NewSafetyMargin(uint newSafetyMarginSqrt);
-	event NewLiquidationIncentive(uint newLiquidationIncentive);
-
-	function SAFETY_MARGIN_SQRT_MIN() external pure returns (uint);
-	function SAFETY_MARGIN_SQRT_MAX() external pure returns (uint);
-	function LIQUIDATION_INCENTIVE_MIN() external pure returns (uint);
-	function LIQUIDATION_INCENTIVE_MAX() external pure returns (uint);
-	
-	function _initialize (
-		string calldata _name, 
-		string calldata _symbol,
-		address _underlying, 
-		address _borrowable0, 
-		address _borrowable1
-	) external;
-	function _setSafetyMarginSqrt(uint newSafetyMarginSqrt) external;
-	function _setLiquidationIncentive(uint newLiquidationIncentive) external;
+pragma solidity >=0.5.0;
+
+interface ICollateral {
+
+	/*** Impermax ERC20 ***/
+	
+	event Transfer(address indexed from, address indexed to, uint value);
+	event Approval(address indexed owner, address indexed spender, uint value);
+	
+	function name() external pure returns (string memory);
+	function symbol() external pure returns (string memory);
+	function decimals() external pure returns (uint8);
+	function totalSupply() external view returns (uint);
+	function balanceOf(address owner) external view returns (uint);
+	function allowance(address owner, address spender) external view returns (uint);
+	function approve(address spender, uint value) external returns (bool);
+	function transfer(address to, uint value) external returns (bool);
+	function transferFrom(address from, address to, uint value) external returns (bool);
+	
+	function DOMAIN_SEPARATOR() external view returns (bytes32);
+	function PERMIT_TYPEHASH() external pure returns (bytes32);
+	function nonces(address owner) external view returns (uint);
+	function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;
+	
+	/*** Pool Token ***/
+	
+	event Mint(address indexed sender, address indexed minter, uint mintAmount, uint mintTokens);
+	event Redeem(address indexed sender, address indexed redeemer, uint redeemAmount, uint redeemTokens);
+	event Sync(uint totalBalance);
+	
+	function underlying() external view returns (address);
+	function factory() external view returns (address);
+	function totalBalance() external view returns (uint);
+	function MINIMUM_LIQUIDITY() external pure returns (uint);
+
+	function exchangeRate() external returns (uint);
+	function mint(address minter) external returns (uint mintTokens);
+	function redeem(address redeemer) external returns (uint redeemAmount);
+	function skim(address to) external;
+	function sync() external;
+	
+	function _setFactory() external;
+	
+	/*** Collateral ***/
+	
+	function borrowable0() external view returns (address);
+	function borrowable1() external view returns (address);
+	function simpleUniswapOracle() external view returns (address);
+	function safetyMarginSqrt() external view returns (uint);
+	function liquidationIncentive() external view returns (uint);
+	
+	function getPrices() external returns (uint price0, uint price1);
+	function tokensUnlocked(address from, uint value) external returns (bool);
+	function accountLiquidityAmounts(address account, uint amount0, uint amount1) external returns (uint liquidity, uint shortfall);
+	function accountLiquidity(address account) external returns (uint liquidity, uint shortfall);
+	function canBorrow(address account, address borrowable, uint accountBorrows) external returns (bool);
+	function seize(address liquidator, address borrower, uint repayAmount) external returns (uint seizeTokens);
+	function flashRedeem(address redeemer, uint redeemAmount, bytes calldata data) external;
+	
+	/*** Collateral Setter ***/
+	
+	event NewSafetyMargin(uint newSafetyMarginSqrt);
+	event NewLiquidationIncentive(uint newLiquidationIncentive);
+
+	function SAFETY_MARGIN_SQRT_MIN() external pure returns (uint);
+	function SAFETY_MARGIN_SQRT_MAX() external pure returns (uint);
+	function LIQUIDATION_INCENTIVE_MIN() external pure returns (uint);
+	function LIQUIDATION_INCENTIVE_MAX() external pure returns (uint);
+	
+	function _initialize (
+		string calldata _name, 
+		string calldata _symbol,
+		address _underlying, 
+		address _borrowable0, 
+		address _borrowable1
+	) external;
+	function _setSafetyMarginSqrt(uint newSafetyMarginSqrt) external;
+	function _setLiquidationIncentive(uint newLiquidationIncentive) external;
 }
 
 // File: contracts\interfaces\IImpermaxCallee.sol
 
-pragma solidity >=0.5.0;
-
-interface IImpermaxCallee {
-    function impermaxBorrow(address sender, address borrower, uint borrowAmount, bytes calldata data) external;
-    function impermaxRedeem(address sender, uint redeemAmount, bytes calldata data) external;
+pragma solidity >=0.5.0;
+
+interface IImpermaxCallee {
+    function impermaxBorrow(address sender, address borrower, uint borrowAmount, bytes calldata data) external;
+    function impermaxRedeem(address sender, uint redeemAmount, bytes calldata data) external;
 }
 
 // File: contracts\interfaces\IERC20.sol
@@ -309,12 +309,12 @@ interface IERC20 {
 
 // File: contracts\interfaces\IWETH.sol
 
-pragma solidity >=0.5.0;
-
-interface IWETH {
-    function deposit() external payable;
-    function transfer(address to, uint value) external returns (bool);
-    function withdraw(uint) external;
+pragma solidity >=0.5.0;
+
+interface IWETH {
+    function deposit() external payable;
+    function transfer(address to, uint value) external returns (bool);
+    function withdraw(uint) external;
 }
 
 // File: contracts\interfaces\IUniswapV2Pair.sol
