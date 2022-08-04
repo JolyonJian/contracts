@@ -1,1 +1,74 @@
-{"erc20.sol":{"content":"pragma solidity \u003e=0.4.22 \u003c0.7.0;\n\nimport \u0027./erc20interface.sol\u0027;\n\ncontract ERC20 is ERC20Interface {\n\n\n    string public  name;\n    string public constant symbol = \"UNN\";\n    uint8 public constant decimals = 18; \n\n    \n     uint public totalSupply;\n     \n    mapping(address =\u003e uint256) internal _balances;\n\n    mapping(address =\u003e mapping(address =\u003e uint256)) allowed;\n\n    constructor(string memory _name) public {\n       name = _name;  \n       totalSupply = 150000000 * 10 ** uint256(decimals);\n       _balances[msg.sender] = totalSupply;\n    }\n\n    function balanceOf(address tokenOwner) public view returns (uint balance) {\n        return _balances[tokenOwner];\n    }\n\n  function transfer(address _to, uint256 _value)  public returns (bool success) {\n      require(_to != address(0));\n      require(_balances[msg.sender] \u003e= _value);\n      require(_balances[ _to] + _value \u003e= _balances[ _to]);   \n\n\n      _balances[msg.sender] -= _value;\n      _balances[_to] += _value;\n\n      emit Transfer(msg.sender, _to, _value);\n\n      return true;\n  }\n\n\n  function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {\n      require(_to != address(0));\n      require(allowed[_from][msg.sender] \u003e= _value);\n      require(_balances[_from] \u003e= _value);\n      require(_balances[ _to] + _value \u003e= _balances[ _to]);\n\n      _balances[_from] -= _value;\n      _balances[_to] += _value;\n\n      allowed[_from][msg.sender] -= _value;\n\n      emit Transfer(msg.sender, _to, _value);\n      return true;\n  }\n\n  function approve(address _spender, uint256 _value) public returns (bool success) {\n      allowed[msg.sender][_spender] = _value;\n\n      emit Approval(msg.sender, _spender, _value);\n      return true;\n  }\n\n  function allowance(address _owner, address _spender) public view returns (uint256 remaining) {\n      return allowed[_owner][_spender];\n  }\n\n}\n"},"erc20interface.sol":{"content":"pragma solidity \u003e=0.4.22 \u003c0.7.0;\n\ncontract ERC20Interface {\n\n    function balanceOf(address tokenOwner) external view returns (uint balance);\n\n    function allowance(address tokenOwner, address spender) external view returns (uint remaining);\n    function approve(address spender, uint tokens) external returns (bool success);\n\n    function transfer(address to, uint tokens) external returns (bool success);\n    function transferFrom(address from, address to, uint tokens) public returns (bool success);\n\n\n    event Transfer(address indexed from, address indexed to, uint tokens);\n    event Approval(address indexed tokenOwner, address indexed spender, uint tokens);\n}"}}
+// erc20.sol
+
+pragma solidity >=0.4.22 <0.7.0;
+
+import './erc20interface.sol';
+
+contract ERC20 is ERC20Interface {
+
+
+    string public  name;
+    string public constant symbol = "UNN";
+    uint8 public constant decimals = 18; 
+
+    
+     uint public totalSupply;
+     
+    mapping(address => uint256) internal _balances;
+
+    mapping(address => mapping(address => uint256)) allowed;
+
+    constructor(string memory _name) public {
+       name = _name;  
+       totalSupply = 150000000 * 10 ** uint256(decimals);
+       _balances[msg.sender] = totalSupply;
+    }
+
+    function balanceOf(address tokenOwner) public view returns (uint balance) {
+        return _balances[tokenOwner];
+    }
+
+  function transfer(address _to, uint256 _value)  public returns (bool success) {
+      require(_to != address(0));
+      require(_balances[msg.sender] >= _value);
+      require(_balances[ _to] + _value >= _balances[ _to]);   
+
+
+      _balances[msg.sender] -= _value;
+      _balances[_to] += _value;
+
+      emit Transfer(msg.sender, _to, _value);
+
+      return true;
+  }
+
+
+  function transferFrom(address _from, address _to, uint256 _value) public returns (bool success) {
+      require(_to != address(0));
+      require(allowed[_from][msg.sender] >= _value);
+      require(_balances[_from] >= _value);
+      require(_balances[ _to] + _value >= _balances[ _to]);
+
+      _balances[_from] -= _value;
+      _balances[_to] += _value;
+
+      allowed[_from][msg.sender] -= _value;
+
+      emit Transfer(msg.sender, _to, _value);
+      return true;
+  }
+
+  function approve(address _spender, uint256 _value) public returns (bool success) {
+      allowed[msg.sender][_spender] = _value;
+
+      emit Approval(msg.sender, _spender, _value);
+      return true;
+  }
+
+  function allowance(address _owner, address _spender) public view returns (uint256 remaining) {
+      return allowed[_owner][_spender];
+  }
+
+}
+
+

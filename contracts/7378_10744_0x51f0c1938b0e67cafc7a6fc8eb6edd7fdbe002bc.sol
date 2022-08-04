@@ -1,102 +1,629 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "contracts/ERC721Drop.sol": {
-      "content": "// SPDX-License-Identifier: GPL-3.0\npragma solidity ^0.8.10;\n\n/**\n\n ________   _____   ____    ______      ____\n/\\_____  \\ /\\  __`\\/\\  _`\\ /\\  _  \\    /\\  _`\\\n\\/____//'/'\\ \\ \\/\\ \\ \\ \\L\\ \\ \\ \\L\\ \\   \\ \\ \\/\\ \\  _ __   ___   _____     ____\n     //'/'  \\ \\ \\ \\ \\ \\ ,  /\\ \\  __ \\   \\ \\ \\ \\ \\/\\`'__\\/ __`\\/\\ '__`\\  /',__\\\n    //'/'___ \\ \\ \\_\\ \\ \\ \\\\ \\\\ \\ \\/\\ \\   \\ \\ \\_\\ \\ \\ \\//\\ \\L\\ \\ \\ \\L\\ \\/\\__, `\\\n    /\\_______\\\\ \\_____\\ \\_\\ \\_\\ \\_\\ \\_\\   \\ \\____/\\ \\_\\\\ \\____/\\ \\ ,__/\\/\\____/\n    \\/_______/ \\/_____/\\/_/\\/ /\\/_/\\/_/    \\/___/  \\/_/ \\/___/  \\ \\ \\/  \\/___/\n                                                                 \\ \\_\\\n                                                                  \\/_/\n\n */\n\nimport {ERC721AUpgradeable} from \"erc721a-upgradeable/ERC721AUpgradeable.sol\";\nimport {IERC2981Upgradeable, IERC165Upgradeable} from \"@openzeppelin/contracts-upgradeable/interfaces/IERC2981Upgradeable.sol\";\nimport {AddressUpgradeable} from \"@openzeppelin/contracts-upgradeable/utils/AddressUpgradeable.sol\";\nimport {AccessControlUpgradeable} from \"@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol\";\nimport {ReentrancyGuardUpgradeable} from \"@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol\";\nimport {MerkleProofUpgradeable} from \"@openzeppelin/contracts-upgradeable/utils/cryptography/MerkleProofUpgradeable.sol\";\n\nimport {IZoraFeeManager} from \"./interfaces/IZoraFeeManager.sol\";\nimport {IMetadataRenderer} from \"./interfaces/IMetadataRenderer.sol\";\nimport {IZoraDrop} from \"./interfaces/IZoraDrop.sol\";\nimport {IOwnable} from \"./interfaces/IOwnable.sol\";\nimport {OwnableSkeleton} from \"./utils/OwnableSkeleton.sol\";\n\n/**\n * @notice ZORA NFT Base contract for Drops and Editions\n *\n * @dev For drops: assumes 1. linear mint order, 2. max number of mints needs to be less than max_uint64\n *       (if you have more than 18 quintillion linear mints you should probably not be using this contract)\n * @author iain@zora.co\n *\n */\ncontract ERC721Drop is\n    ERC721AUpgradeable,\n    IERC2981Upgradeable,\n    ReentrancyGuardUpgradeable,\n    AccessControlUpgradeable,\n    IZoraDrop,\n    OwnableSkeleton\n{\n    /// @dev This is the underlying contract version that is implemented by the interface\n    uint256 private constant VERSION = 3;\n    /// @dev This is the max mint batch size for the optimized ERC721A mint contract\n    uint256 private constant MAX_MINT_BATCH_SIZE = 8;\n\n    using AddressUpgradeable for address payable;\n\n    event SalesConfigChanged(\n        address indexed changedBy,\n        SalesConfiguration salesConfig\n    );\n\n    event FundsRecipientChanged(\n        address indexed newAddress,\n        address indexed changedBy\n    );\n\n    event OpenMintFinalized(address indexed sender, uint256 numberOfMints);\n\n    /// @notice Error string constants\n    string private constant SOLD_OUT = \"Sold out\";\n    string private constant TOO_MANY = \"Too many\";\n\n    /// @notice Access control roles\n    bytes32 public immutable MINTER_ROLE = keccak256(\"MINTER\");\n    bytes32 public immutable SALES_MANAGER_ROLE = keccak256(\"SALES_MANAGER\");\n\n    /// @dev Returns the version of the contract.\n    function contractVersion() external pure returns (uint256) {\n        return VERSION;\n    }\n\n    /// @notice General configuration for NFT Minting and bookkeeping\n    struct Configuration {\n        /// @dev Metadata renderer\n        IMetadataRenderer metadataRenderer;\n        /// @dev Total size of edition that can be minted\n        uint64 editionSize;\n        /// @dev Royalty amount in bps\n        uint16 royaltyBPS;\n        /// @dev Funds recipient for sale\n        address payable fundsRecipient;\n    }\n\n    /// @notice Sales states and configuration\n    /// @dev Uses 3 storage slots\n    struct SalesConfiguration {\n        /// @dev Public sale price\n        uint104 publicSalePrice;\n        /// @dev Max purchase number per txn\n        uint32 maxSalePurchasePerAddress;\n        /// @dev uint64 type allows for dates into 292 billion years\n\n        // Storage: uses 1 slot\n\n        /// @dev Public sale start timestamp\n        uint64 publicSaleStart;\n        /// @dev Public sale end timestamp\n        uint64 publicSaleEnd;\n        /// @dev Presale start timestamp\n        uint64 presaleStart;\n        /// @dev Presale end timestamp\n        uint64 presaleEnd;\n        // Storage: uses 1 slot\n\n        /// @dev Presale merkle root\n        bytes32 presaleMerkleRoot;\n    }\n\n    /// @notice Configuration for NFT minting contract storage\n    Configuration public config;\n\n    /// @notice Sales configuration\n    SalesConfiguration public salesConfig;\n\n    /// @dev ZORA V3 transfer helper address for auto-approval\n    address private immutable zoraERC721TransferHelper;\n\n    /// @dev Mapping for presale mint counts by address to allow public mint limit\n    mapping(address => uint256) public presaleMintsByAddress;\n\n    /// @dev Zora Fee Manager address\n    IZoraFeeManager public immutable zoraFeeManager;\n\n    /// @notice Only allow for users with admin access\n    modifier onlyAdmin() {\n        require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender), \"Only admin allowed\");\n\n        _;\n    }\n\n    /// @notice Allows user to mint tokens at a quantity\n    modifier canMintTokens(uint256 quantity) {\n        require(quantity + _totalMinted() <= config.editionSize, TOO_MANY);\n\n        _;\n    }\n\n    function _presaleActive() internal view returns (bool) {\n        return\n            salesConfig.presaleStart <= block.timestamp &&\n            salesConfig.presaleEnd > block.timestamp;\n    }\n\n    function _publicSaleActive() internal view returns (bool) {\n        return\n            salesConfig.publicSaleStart <= block.timestamp &&\n            salesConfig.publicSaleEnd > block.timestamp;\n    }\n\n    /// @notice Presale active\n    modifier onlyPresaleActive() {\n        require(_presaleActive(), \"Presale inactive\");\n\n        _;\n    }\n\n    /// @notice Public sale active\n    modifier onlyPublicSaleActive() {\n        require(_publicSaleActive(), \"Sale inactive\");\n\n        _;\n    }\n\n    /// @notice Getter for last minted token ID (gets next token id and subtracts 1)\n    function _lastMintedTokenId() internal view returns (uint256) {\n        return _currentIndex - 1;\n    }\n\n    /// @notice Start token ID for minting (1-100 vs 0-99)\n    function _startTokenId() internal pure override returns (uint256) {\n        return 1;\n    }\n\n    /// @notice Only a given role has access or admin\n    /// @param role role to check for alongside the admin role\n    modifier onlyRoleOrAdmin(bytes32 role) {\n        require(\n            hasRole(DEFAULT_ADMIN_ROLE, msg.sender) ||\n                hasRole(role, msg.sender),\n            \"Does not have proper role or admin\"\n        );\n\n        _;\n    }\n\n    /// @notice Global constructor – these variables will not change with further proxy deploys\n    /// @param _zoraFeeManager Zora Fee Manager\n    /// @param _zoraERC721TransferHelper Transfer helper\n    constructor(\n        IZoraFeeManager _zoraFeeManager,\n        address _zoraERC721TransferHelper\n    ) {\n        zoraFeeManager = _zoraFeeManager;\n        zoraERC721TransferHelper = _zoraERC721TransferHelper;\n    }\n\n    ///  @dev Function to create a new edition. Can only be called by the allowed creator\n    ///       Sets the only allowed minter to the address that creates/owns the edition.\n    ///       This can be re-assigned or updated later\n    ///  @param _owner User that owns and can mint the edition, gets royalty and sales payouts and can update the base url if needed.\n    ///  @param _fundsRecipient Wallet/user that receives funds from sale\n    ///  @param _editionSize Number of editions that can be minted in total. If 0, unlimited editions can be minted.\n    ///  @param _royaltyBPS BPS of the royalty set on the contract. Can be 0 for no royalty.\n    function initialize(\n        string memory _name,\n        string memory _symbol,\n        address _owner,\n        address payable _fundsRecipient,\n        uint64 _editionSize,\n        uint16 _royaltyBPS,\n        IMetadataRenderer _metadataRenderer,\n        bytes memory _metadataRendererInit\n    ) public initializer {\n        // Setup ERC721A\n        __ERC721A_init(_name, _symbol);\n        // Setup access control\n        __AccessControl_init();\n        // Setup re-entracy guard\n        __ReentrancyGuard_init();\n        // Setup the owner role\n        _setupRole(DEFAULT_ADMIN_ROLE, _owner);\n        // Set ownership to original sender of contract call\n        _setOwner(_owner);\n\n        require(\n            config.royaltyBPS < 50_01,\n            \"Royalty BPS cannot be greater than 50%\"\n        );\n\n        config.editionSize = _editionSize;\n        config.metadataRenderer = _metadataRenderer;\n        config.royaltyBPS = _royaltyBPS;\n        config.fundsRecipient = _fundsRecipient;\n        _metadataRenderer.initializeWithData(_metadataRendererInit);\n    }\n\n    /// @dev Getter for admin role associated with the contract to handle metadata\n    /// @return boolean if address is admin\n    function isAdmin(address user) external view returns (bool) {\n        return hasRole(DEFAULT_ADMIN_ROLE, user);\n    }\n\n    /// @param tokenId Token ID to burn\n    /// @notice User burn function for token id\n    function burn(uint256 tokenId) public {\n        _burn(tokenId, true);\n    }\n\n    /// @dev Get royalty information for token\n    /// @param _salePrice Sale price for the token\n    function royaltyInfo(uint256, uint256 _salePrice)\n        external\n        view\n        override\n        returns (address receiver, uint256 royaltyAmount)\n    {\n        if (config.fundsRecipient == address(0x0)) {\n            return (config.fundsRecipient, 0);\n        }\n        return (\n            config.fundsRecipient,\n            (_salePrice * config.royaltyBPS) / 10_000\n        );\n    }\n\n    /// @notice Sale details\n    /// @return IZoraDrop.SaleDetails sale information details\n    function saleDetails()\n        external\n        view\n        returns (IZoraDrop.SaleDetails memory)\n    {\n        return\n            IZoraDrop.SaleDetails({\n                publicSaleActive: _publicSaleActive(),\n                presaleActive: _presaleActive(),\n                presaleStart: salesConfig.presaleStart,\n                presaleEnd: salesConfig.presaleEnd,\n                publicSaleStart: salesConfig.publicSaleStart,\n                publicSaleEnd: salesConfig.publicSaleEnd,\n                presaleMerkleRoot: salesConfig.presaleMerkleRoot,\n                publicSalePrice: salesConfig.publicSalePrice,\n                totalMinted: _totalMinted(),\n                maxSupply: config.editionSize,\n                maxSalePurchasePerAddress: salesConfig.maxSalePurchasePerAddress\n            });\n    }\n\n    /// @dev Number of NFTs the user has minted per address\n    /// @param minter to get counts for\n    function mintedPerAddress(address minter)\n        external\n        view\n        override\n        returns (IZoraDrop.AddressMintDetails memory)\n    {\n        return\n            IZoraDrop.AddressMintDetails({\n                presaleMints: presaleMintsByAddress[minter],\n                publicMints: _numberMinted(minter) -\n                    presaleMintsByAddress[minter],\n                totalMints: _numberMinted(minter)\n            });\n    }\n\n    /// @dev Setup auto-approval for Zora v3 access to sell NFT\n    ///      Still requires approval for module\n    /// @param nftOwner owner of the nft\n    /// @param operator operator wishing to transfer/burn/etc the NFTs\n    function isApprovedForAll(address nftOwner, address operator)\n        public\n        view\n        override(ERC721AUpgradeable)\n        returns (bool)\n    {\n        if (operator == zoraERC721TransferHelper) {\n            return true;\n        }\n        return super.isApprovedForAll(nftOwner, operator);\n    }\n\n    /// @dev Gets the zora fee for amount of withdraw\n    /// @param amount amount of funds to get fee for\n    function zoraFeeForAmount(uint256 amount)\n        public\n        returns (address payable, uint256)\n    {\n        (address payable recipient, uint256 bps) = zoraFeeManager\n            .getZORAWithdrawFeesBPS(address(this));\n        return (recipient, (amount * bps) / 10_000);\n    }\n\n    /**\n     *** ---------------------------------- ***\n     ***                                    ***\n     ***     PUBLIC MINTING FUNCTIONS       ***\n     ***                                    ***\n     *** ---------------------------------- ***\n     ***\n     ***/\n\n    /**\n      @dev This allows the user to purchase a edition edition\n           at the given price in the contract.\n     */\n    function purchase(uint256 quantity)\n        external\n        payable\n        nonReentrant\n        canMintTokens(quantity)\n        onlyPublicSaleActive\n        returns (uint256)\n    {\n        uint256 salePrice = salesConfig.publicSalePrice;\n\n        require(msg.value == salePrice * quantity, \"Wrong price\");\n        require(\n            _numberMinted(_msgSender()) +\n                quantity -\n                presaleMintsByAddress[_msgSender()] <=\n                salesConfig.maxSalePurchasePerAddress,\n            TOO_MANY\n        );\n\n        _mintNFTs(_msgSender(), quantity);\n        uint256 firstMintedTokenId = _lastMintedTokenId() - quantity;\n\n        emit IZoraDrop.Sale({\n            to: _msgSender(),\n            quantity: quantity,\n            pricePerToken: salePrice,\n            firstPurchasedTokenId: firstMintedTokenId\n        });\n        return firstMintedTokenId;\n    }\n\n    /// @notice Function to mint NFTs\n    /// @dev (important: Does not enforce max supply limit, enforce that limit earlier)\n    /// @dev This batches in size of 8 as per recommended by ERC721A creators\n    /// @param to address to mint NFTs to\n    /// @param quantity number of NFTs to mint\n    function _mintNFTs(address to, uint256 quantity) internal {\n        do {\n            uint256 toMint = quantity > MAX_MINT_BATCH_SIZE\n                ? MAX_MINT_BATCH_SIZE\n                : quantity;\n            _mint({to: to, quantity: toMint, _data: \"\", safe: false});\n            quantity -= toMint;\n        } while (quantity > 0);\n    }\n\n    /// @notice Merkle-tree based presale purchase function\n    /// @param quantity quantity to purchase\n    /// @param maxQuantity max quantity that can be purchased via merkle proof #\n    /// @param pricePerToken price that each token is purchased at\n    /// @param merkleProof proof for presale mint\n    function purchasePresale(\n        uint256 quantity,\n        uint256 maxQuantity,\n        uint256 pricePerToken,\n        bytes32[] calldata merkleProof\n    )\n        external\n        payable\n        nonReentrant\n        canMintTokens(quantity)\n        onlyPresaleActive\n        returns (uint256)\n    {\n        require(\n            MerkleProofUpgradeable.verify(\n                merkleProof,\n                salesConfig.presaleMerkleRoot,\n                keccak256(\n                    // address, uint256, uint256\n                    abi.encode(msg.sender, maxQuantity, pricePerToken)\n                )\n            ),\n            \"Needs to be approved\"\n        );\n        require(msg.value == pricePerToken * quantity, \"Wrong price\");\n\n        presaleMintsByAddress[_msgSender()] += quantity;\n        require(presaleMintsByAddress[_msgSender()] <= maxQuantity, TOO_MANY);\n\n        _mintNFTs(_msgSender(), quantity);\n        uint256 firstMintedTokenId = _lastMintedTokenId() - quantity;\n\n        emit IZoraDrop.Sale({\n            to: _msgSender(),\n            quantity: quantity,\n            pricePerToken: pricePerToken,\n            firstPurchasedTokenId: firstMintedTokenId\n        });\n\n        return firstMintedTokenId;\n    }\n\n    /**\n     *** ---------------------------------- ***\n     ***                                    ***\n     ***     ADMIN MINTING FUNCTIONS        ***\n     ***                                    ***\n     *** ---------------------------------- ***\n     ***\n     ***/\n\n    /// @notice Mint admin\n    /// @param recipient recipient to mint to\n    /// @param quantity quantity to mint\n    function adminMint(address recipient, uint256 quantity)\n        external\n        onlyRoleOrAdmin(MINTER_ROLE)\n        canMintTokens(quantity)\n        returns (uint256)\n    {\n        _mintNFTs(recipient, quantity);\n\n        return _lastMintedTokenId();\n    }\n\n    /// @dev This mints multiple editions to the given list of addresses.\n    /// @param recipients list of addresses to send the newly minted editions to\n    function adminMintAirdrop(address[] calldata recipients)\n        external\n        override\n        onlyRoleOrAdmin(MINTER_ROLE)\n        canMintTokens(recipients.length)\n        returns (uint256)\n    {\n        uint256 atId = _currentIndex;\n        uint256 startAt = atId;\n\n        unchecked {\n            for (\n                uint256 endAt = atId + recipients.length;\n                atId < endAt;\n                atId++\n            ) {\n                _mintNFTs(recipients[atId - startAt], 1);\n            }\n        }\n        return _lastMintedTokenId();\n    }\n\n    /**\n     *** ---------------------------------- ***\n     ***                                    ***\n     ***  ADMIN CONFIGURATION FUNCTIONS     ***\n     ***                                    ***\n     *** ---------------------------------- ***\n     ***\n     ***/\n\n    /// @dev Set new owner for royalties / opensea\n    /// @param newOwner new owner to set\n    function setOwner(address newOwner) public onlyAdmin {\n        _setOwner(newOwner);\n    }\n\n    /// @dev This sets the sales configuration\n    /// @param newConfig new configuration to set for sales information\n    function setDropSaleConfiguration(SalesConfiguration memory newConfig)\n        external\n        onlyAdmin\n    {\n        salesConfig = newConfig;\n        emit SalesConfigChanged(_msgSender(), salesConfig);\n    }\n\n    /// @dev Set a different funds recipient\n    /// @param newRecipientAddress new funds recipient address\n    function setFundsRecipient(address payable newRecipientAddress)\n        external\n        onlyRoleOrAdmin(SALES_MANAGER_ROLE)\n    {\n        config.fundsRecipient = newRecipientAddress;\n        emit FundsRecipientChanged(newRecipientAddress, _msgSender());\n    }\n\n    /// @dev This withdraws ETH from the contract to the contract owner.\n    function withdraw() external nonReentrant {\n        address sender = _msgSender();\n\n        uint256 funds = address(this).balance;\n        (address payable feeRecipient, uint256 zoraFee) = zoraFeeForAmount(\n            funds\n        );\n\n        require(\n            hasRole(DEFAULT_ADMIN_ROLE, sender) ||\n                hasRole(SALES_MANAGER_ROLE, sender) ||\n                sender == feeRecipient ||\n                sender == config.fundsRecipient,\n            \"Does not have proper role to withdraw\"\n        );\n\n        // No need for gas limit to trusted address.\n        if (zoraFee > 0) {\n            feeRecipient.sendValue(zoraFee);\n            funds -= zoraFee;\n        }\n        // No need for gas limit to trusted address.\n        config.fundsRecipient.sendValue(funds);\n    }\n\n    /// @notice Admin function to finalize and open edition sale\n    function finalizeOpenEdition()\n        external\n        onlyRoleOrAdmin(SALES_MANAGER_ROLE)\n    {\n        require(config.editionSize == type(uint64).max, \"Not open edition\");\n        config.editionSize = uint64(_totalMinted());\n        emit OpenMintFinalized(_msgSender(), config.editionSize);\n    }\n\n    /**\n     *** ---------------------------------- ***\n     ***                                    ***\n     ***      GENERAL GETTER FUNCTIONS      ***\n     ***                                    ***\n     *** ---------------------------------- ***\n     ***\n     ***/\n\n    /// @notice Simple override for owner interface.\n    /// @return user owner address\n    function owner()\n        public\n        view\n        override(OwnableSkeleton, IZoraDrop)\n        returns (address)\n    {\n        return super.owner();\n    }\n\n    /// @notice Contract URI Getter, proxies to metadataRenderer\n    /// @return Contract URI\n    function contractURI() external view returns (string memory) {\n        return config.metadataRenderer.contractURI();\n    }\n\n    /// @notice Getter for metadataRenderer contract\n    function metadataRenderer() external view returns (IMetadataRenderer) {\n        return IMetadataRenderer(config.metadataRenderer);\n    }\n\n    /// @notice Token URI Getter, proxies to metadataRenderer\n    /// @param tokenId id of token to get URI for\n    /// @return Token URI\n    function tokenURI(uint256 tokenId)\n        public\n        view\n        override\n        returns (string memory)\n    {\n        return config.metadataRenderer.tokenURI(tokenId);\n    }\n\n    /// @notice ERC165 supports interface\n    /// @param interfaceId interface id to check if supported\n    function supportsInterface(bytes4 interfaceId)\n        public\n        view\n        override(\n            IERC165Upgradeable,\n            ERC721AUpgradeable,\n            AccessControlUpgradeable\n        )\n        returns (bool)\n    {\n        return\n            super.supportsInterface(interfaceId) ||\n            type(IOwnable).interfaceId == interfaceId ||\n            type(IERC2981Upgradeable).interfaceId == interfaceId ||\n            type(IZoraDrop).interfaceId == interfaceId;\n    }\n}\n"
-    },
-    "contracts/interfaces/IMetadataRenderer.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.10;\n\ninterface IMetadataRenderer {\n    function tokenURI(uint256) external view returns (string memory);\n    function contractURI() external view returns (string memory);\n    function initializeWithData(bytes memory initData) external;\n}\n"
-    },
-    "contracts/interfaces/IOwnable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.10;\n\n/**\n * @dev Contract module which provides a basic access control mechanism, where\n * there is an account (an owner) that can be granted exclusive access to\n * specific functions.\n *\n * This ownership interface matches OZ's ownable interface.\n *\n */\ninterface IOwnable {\n    event OwnershipTransferred(\n        address indexed previousOwner,\n        address indexed newOwner\n    );\n\n    /**\n     * @dev Returns the address of the current owner.\n     */\n    function owner() external view returns (address);\n}\n"
-    },
-    "contracts/interfaces/IZoraDrop.sol": {
-      "content": "// SPDX-License-Identifier: GPL-3.0\npragma solidity ^0.8.10;\n\n/**\n\n ________   _____   ____    ______      ____\n/\\_____  \\ /\\  __`\\/\\  _`\\ /\\  _  \\    /\\  _`\\\n\\/____//'/'\\ \\ \\/\\ \\ \\ \\L\\ \\ \\ \\L\\ \\   \\ \\ \\/\\ \\  _ __   ___   _____     ____\n     //'/'  \\ \\ \\ \\ \\ \\ ,  /\\ \\  __ \\   \\ \\ \\ \\ \\/\\`'__\\/ __`\\/\\ '__`\\  /',__\\\n    //'/'___ \\ \\ \\_\\ \\ \\ \\\\ \\\\ \\ \\/\\ \\   \\ \\ \\_\\ \\ \\ \\//\\ \\L\\ \\ \\ \\L\\ \\/\\__, `\\\n    /\\_______\\\\ \\_____\\ \\_\\ \\_\\ \\_\\ \\_\\   \\ \\____/\\ \\_\\\\ \\____/\\ \\ ,__/\\/\\____/\n    \\/_______/ \\/_____/\\/_/\\/ /\\/_/\\/_/    \\/___/  \\/_/ \\/___/  \\ \\ \\/  \\/___/\n                                                                 \\ \\_\\\n                                                                  \\/_/\n\n*/\n\n/// @notice Interface for ZORA Drops contract\ninterface IZoraDrop {\n    /// @notice Event emitted for each sale\n    event Sale(\n        address indexed to,\n        uint256 indexed quantity,\n        uint256 indexed pricePerToken,\n        uint256 firstPurchasedTokenId\n    );\n\n    /// @notice Return value for sales details to use with front-ends\n    struct SaleDetails {\n        // Synthesized status variables for sale and presale\n        bool presaleActive;\n        bool publicSaleActive;\n\n        // Timed sale actions for public sale\n        uint64 publicSaleStart;\n        uint64 publicSaleEnd;\n        // Price for public sale\n        uint256 publicSalePrice;\n        // Timed sale actions for presale\n        uint64 presaleStart;\n        uint64 presaleEnd;\n        // Merkle root (includes address, quantity, and price data for each entry)\n        bytes32 presaleMerkleRoot;\n        // Limit public sale to a specific number of mints per wallet\n        uint256 maxSalePurchasePerAddress;\n        // Information about the rest of the supply\n        // Total that have been minted\n        uint256 totalMinted;\n        // The total supply available\n        uint256 maxSupply;\n    }\n\n    /// @notice Return type of specific mint counts and details per address\n    struct AddressMintDetails {\n        /// Number of total mints from the given address\n        uint256 totalMints;\n        /// Number of presale mints from the given address\n        uint256 presaleMints;\n        /// Number of public mints from the given address\n        uint256 publicMints;\n    }\n\n    /// @notice External purchase function (payable in eth)\n    /// @param quantity to purchase\n    /// @return first minted token ID\n    function purchase(uint256 quantity) external payable returns (uint256);\n\n    /// @notice External purchase presale function (takes a merkle proof and matches to root) (payable in eth)\n    /// @param quantity to purchase\n    /// @param maxQuantity can purchase (verified by merkle root)\n    /// @param pricePerToken price per token allowed (verified by merkle root)\n    /// @param merkleProof input for merkle proof leaf verified by merkle root\n    /// @return first minted token ID\n    function purchasePresale(\n        uint256 quantity,\n        uint256 maxQuantity,\n        uint256 pricePerToken,\n        bytes32[] memory merkleProof\n    ) external payable returns (uint256);\n\n    /// @notice Function to return the global sales details for the given drop\n    function saleDetails() external view returns (SaleDetails memory);\n\n    /// @notice Function to return the specific sales details for a given address\n    /// @param minter address for minter to return mint information for\n    function mintedPerAddress(address minter)\n        external\n        view\n        returns (AddressMintDetails memory);\n\n    /// @notice This is the opensea/public owner setting that can be set by the contract admin\n    function owner() external view returns (address);\n\n    /// @notice This is an admin mint function to mint a quantity to a specific address\n    /// @param to address to mint to\n    /// @param quantity quantity to mint\n    /// @return the id of the first minted NFT\n    function adminMint(address to, uint256 quantity) external returns (uint256);\n\n    /// @notice This is an admin mint function to mint a single nft each to a list of addresses\n    /// @param to list of addresses to mint an NFT each to\n    /// @return the id of the first minted NFT\n    function adminMintAirdrop(address[] memory to) external returns (uint256);\n\n    /// @notice The version of the contract\n    /// @return The version ID of this contract implementation\n    function contractVersion() external pure returns (uint256);\n}\n"
-    },
-    "contracts/interfaces/IZoraFeeManager.sol": {
-      "content": "// SPDX-License-Identifier: GPL-3.0\npragma solidity ^0.8.10;\n\ninterface IZoraFeeManager {\n    function getZORAWithdrawFeesBPS(address sender) external returns (address payable, uint256);\n}\n"
-    },
-    "contracts/utils/OwnableSkeleton.sol": {
-      "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.10;\n\nimport {IOwnable} from \"../interfaces/IOwnable.sol\";\n\n/**\n * @dev Contract module which provides a basic access control mechanism, where\n * there is an account (an owner) that can be granted exclusive access to\n * specific functions.\n *\n * This ownership interface matches OZ's ownable interface.\n */\ncontract OwnableSkeleton is IOwnable {\n    address private _owner;\n\n    /**\n     * @dev Returns the address of the current owner.\n     */\n    function owner() public view virtual returns (address) {\n        return _owner;\n    }\n\n    function _setOwner(address newAddress) internal {\n        emit OwnershipTransferred(_owner, newAddress);\n        _owner = newAddress;\n    }\n}\n"
-    },
-    "lib/ERC721A-Upgradeable/contracts/ERC721AUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// Creator: Chiru Labs\n\npragma solidity ^0.8.4;\n\nimport \"@openzeppelin/contracts-upgradeable/token/ERC721/IERC721Upgradeable.sol\";\nimport \"@openzeppelin/contracts-upgradeable/token/ERC721/IERC721ReceiverUpgradeable.sol\";\nimport \"@openzeppelin/contracts-upgradeable/token/ERC721/extensions/IERC721MetadataUpgradeable.sol\";\nimport \"@openzeppelin/contracts-upgradeable/utils/AddressUpgradeable.sol\";\nimport \"@openzeppelin/contracts-upgradeable/utils/ContextUpgradeable.sol\";\nimport \"@openzeppelin/contracts-upgradeable/utils/StringsUpgradeable.sol\";\nimport \"@openzeppelin/contracts-upgradeable/utils/introspection/ERC165Upgradeable.sol\";\nimport \"@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol\";\n\nerror ApprovalCallerNotOwnerNorApproved();\nerror ApprovalQueryForNonexistentToken();\nerror ApproveToCaller();\nerror ApprovalToCurrentOwner();\nerror BalanceQueryForZeroAddress();\nerror MintToZeroAddress();\nerror MintZeroQuantity();\nerror OwnerQueryForNonexistentToken();\nerror TransferCallerNotOwnerNorApproved();\nerror TransferFromIncorrectOwner();\nerror TransferToNonERC721ReceiverImplementer();\nerror TransferToZeroAddress();\nerror URIQueryForNonexistentToken();\n\n/**\n * @dev Implementation of https://eips.ethereum.org/EIPS/eip-721[ERC721] Non-Fungible Token Standard, including\n * the Metadata extension. Built to optimize for lower gas during batch mints.\n *\n * Assumes serials are sequentially minted starting at _startTokenId() (defaults to 0, e.g. 0, 1, 2, 3..).\n *\n * Assumes that an owner cannot have more than 2**64 - 1 (max value of uint64) of supply.\n *\n * Assumes that the maximum token id cannot exceed 2**256 - 1 (max value of uint256).\n */\ncontract ERC721AUpgradeable is Initializable, ContextUpgradeable, ERC165Upgradeable, IERC721Upgradeable, IERC721MetadataUpgradeable {\n    using AddressUpgradeable for address;\n    using StringsUpgradeable for uint256;\n\n    // Compiler will pack this into a single 256bit word.\n    struct TokenOwnership {\n        // The address of the owner.\n        address addr;\n        // Keeps track of the start time of ownership with minimal overhead for tokenomics.\n        uint64 startTimestamp;\n        // Whether the token has been burned.\n        bool burned;\n    }\n\n    // Compiler will pack this into a single 256bit word.\n    struct AddressData {\n        // Realistically, 2**64-1 is more than enough.\n        uint64 balance;\n        // Keeps track of mint count with minimal overhead for tokenomics.\n        uint64 numberMinted;\n        // Keeps track of burn count with minimal overhead for tokenomics.\n        uint64 numberBurned;\n        // For miscellaneous variable(s) pertaining to the address\n        // (e.g. number of whitelist mint slots used).\n        // If there are multiple variables, please pack them into a uint64.\n        uint64 aux;\n    }\n\n    // The tokenId of the next token to be minted.\n    uint256 internal _currentIndex;\n\n    // The number of tokens burned.\n    uint256 internal _burnCounter;\n\n    // Token name\n    string private _name;\n\n    // Token symbol\n    string private _symbol;\n\n    // Mapping from token ID to ownership details\n    // An empty struct value does not necessarily mean the token is unowned. See _ownershipOf implementation for details.\n    mapping(uint256 => TokenOwnership) internal _ownerships;\n\n    // Mapping owner address to address data\n    mapping(address => AddressData) private _addressData;\n\n    // Mapping from token ID to approved address\n    mapping(uint256 => address) private _tokenApprovals;\n\n    // Mapping from owner to operator approvals\n    mapping(address => mapping(address => bool)) private _operatorApprovals;\n\n    function __ERC721A_init(string memory name_, string memory symbol_) internal onlyInitializing {\n        __ERC721A_init_unchained(name_, symbol_);\n    }\n\n    function __ERC721A_init_unchained(string memory name_, string memory symbol_) internal onlyInitializing {\n        _name = name_;\n        _symbol = symbol_;\n        _currentIndex = _startTokenId();\n    }\n\n    /**\n     * To change the starting tokenId, please override this function.\n     */\n    function _startTokenId() internal view virtual returns (uint256) {\n        return 0;\n    }\n\n    /**\n     * @dev Burned tokens are calculated here, use _totalMinted() if you want to count just minted tokens.\n     */\n    function totalSupply() public view returns (uint256) {\n        // Counter underflow is impossible as _burnCounter cannot be incremented\n        // more than _currentIndex - _startTokenId() times\n        unchecked {\n            return _currentIndex - _burnCounter - _startTokenId();\n        }\n    }\n\n    /**\n     * Returns the total amount of tokens minted in the contract.\n     */\n    function _totalMinted() internal view returns (uint256) {\n        // Counter underflow is impossible as _currentIndex does not decrement,\n        // and it is initialized to _startTokenId()\n        unchecked {\n            return _currentIndex - _startTokenId();\n        }\n    }\n\n    /**\n     * @dev See {IERC165-supportsInterface}.\n     */\n    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165Upgradeable, IERC165Upgradeable) returns (bool) {\n        return\n            interfaceId == type(IERC721Upgradeable).interfaceId ||\n            interfaceId == type(IERC721MetadataUpgradeable).interfaceId ||\n            super.supportsInterface(interfaceId);\n    }\n\n    /**\n     * @dev See {IERC721-balanceOf}.\n     */\n    function balanceOf(address owner) public view override returns (uint256) {\n        if (owner == address(0)) revert BalanceQueryForZeroAddress();\n        return uint256(_addressData[owner].balance);\n    }\n\n    /**\n     * Returns the number of tokens minted by `owner`.\n     */\n    function _numberMinted(address owner) internal view returns (uint256) {\n        return uint256(_addressData[owner].numberMinted);\n    }\n\n    /**\n     * Returns the number of tokens burned by or on behalf of `owner`.\n     */\n    function _numberBurned(address owner) internal view returns (uint256) {\n        return uint256(_addressData[owner].numberBurned);\n    }\n\n    /**\n     * Returns the auxillary data for `owner`. (e.g. number of whitelist mint slots used).\n     */\n    function _getAux(address owner) internal view returns (uint64) {\n        return _addressData[owner].aux;\n    }\n\n    /**\n     * Sets the auxillary data for `owner`. (e.g. number of whitelist mint slots used).\n     * If there are multiple variables, please pack them into a uint64.\n     */\n    function _setAux(address owner, uint64 aux) internal {\n        _addressData[owner].aux = aux;\n    }\n\n    /**\n     * Gas spent here starts off proportional to the maximum mint batch size.\n     * It gradually moves to O(1) as tokens get transferred around in the collection over time.\n     */\n    function _ownershipOf(uint256 tokenId) internal view returns (TokenOwnership memory) {\n        uint256 curr = tokenId;\n\n        unchecked {\n            if (_startTokenId() <= curr && curr < _currentIndex) {\n                TokenOwnership memory ownership = _ownerships[curr];\n                if (!ownership.burned) {\n                    if (ownership.addr != address(0)) {\n                        return ownership;\n                    }\n                    // Invariant:\n                    // There will always be an ownership that has an address and is not burned\n                    // before an ownership that does not have an address and is not burned.\n                    // Hence, curr will not underflow.\n                    while (true) {\n                        curr--;\n                        ownership = _ownerships[curr];\n                        if (ownership.addr != address(0)) {\n                            return ownership;\n                        }\n                    }\n                }\n            }\n        }\n        revert OwnerQueryForNonexistentToken();\n    }\n\n    /**\n     * @dev See {IERC721-ownerOf}.\n     */\n    function ownerOf(uint256 tokenId) public view override returns (address) {\n        return _ownershipOf(tokenId).addr;\n    }\n\n    /**\n     * @dev See {IERC721Metadata-name}.\n     */\n    function name() public view virtual override returns (string memory) {\n        return _name;\n    }\n\n    /**\n     * @dev See {IERC721Metadata-symbol}.\n     */\n    function symbol() public view virtual override returns (string memory) {\n        return _symbol;\n    }\n\n    /**\n     * @dev See {IERC721Metadata-tokenURI}.\n     */\n    function tokenURI(uint256 tokenId) public view virtual override returns (string memory) {\n        if (!_exists(tokenId)) revert URIQueryForNonexistentToken();\n\n        string memory baseURI = _baseURI();\n        return bytes(baseURI).length != 0 ? string(abi.encodePacked(baseURI, tokenId.toString())) : '';\n    }\n\n    /**\n     * @dev Base URI for computing {tokenURI}. If set, the resulting URI for each\n     * token will be the concatenation of the `baseURI` and the `tokenId`. Empty\n     * by default, can be overriden in child contracts.\n     */\n    function _baseURI() internal view virtual returns (string memory) {\n        return '';\n    }\n\n    /**\n     * @dev See {IERC721-approve}.\n     */\n    function approve(address to, uint256 tokenId) public override {\n        address owner = ERC721AUpgradeable.ownerOf(tokenId);\n        if (to == owner) revert ApprovalToCurrentOwner();\n\n        if (_msgSender() != owner && !isApprovedForAll(owner, _msgSender())) {\n            revert ApprovalCallerNotOwnerNorApproved();\n        }\n\n        _approve(to, tokenId, owner);\n    }\n\n    /**\n     * @dev See {IERC721-getApproved}.\n     */\n    function getApproved(uint256 tokenId) public view override returns (address) {\n        if (!_exists(tokenId)) revert ApprovalQueryForNonexistentToken();\n\n        return _tokenApprovals[tokenId];\n    }\n\n    /**\n     * @dev See {IERC721-setApprovalForAll}.\n     */\n    function setApprovalForAll(address operator, bool approved) public virtual override {\n        if (operator == _msgSender()) revert ApproveToCaller();\n\n        _operatorApprovals[_msgSender()][operator] = approved;\n        emit ApprovalForAll(_msgSender(), operator, approved);\n    }\n\n    /**\n     * @dev See {IERC721-isApprovedForAll}.\n     */\n    function isApprovedForAll(address owner, address operator) public view virtual override returns (bool) {\n        return _operatorApprovals[owner][operator];\n    }\n\n    /**\n     * @dev See {IERC721-transferFrom}.\n     */\n    function transferFrom(\n        address from,\n        address to,\n        uint256 tokenId\n    ) public virtual override {\n        _transfer(from, to, tokenId);\n    }\n\n    /**\n     * @dev See {IERC721-safeTransferFrom}.\n     */\n    function safeTransferFrom(\n        address from,\n        address to,\n        uint256 tokenId\n    ) public virtual override {\n        safeTransferFrom(from, to, tokenId, '');\n    }\n\n    /**\n     * @dev See {IERC721-safeTransferFrom}.\n     */\n    function safeTransferFrom(\n        address from,\n        address to,\n        uint256 tokenId,\n        bytes memory _data\n    ) public virtual override {\n        _transfer(from, to, tokenId);\n        if (to.isContract() && !_checkContractOnERC721Received(from, to, tokenId, _data)) {\n            revert TransferToNonERC721ReceiverImplementer();\n        }\n    }\n\n    /**\n     * @dev Returns whether `tokenId` exists.\n     *\n     * Tokens can be managed by their owner or approved accounts via {approve} or {setApprovalForAll}.\n     *\n     * Tokens start existing when they are minted (`_mint`),\n     */\n    function _exists(uint256 tokenId) internal view returns (bool) {\n        return _startTokenId() <= tokenId && tokenId < _currentIndex &&\n            !_ownerships[tokenId].burned;\n    }\n\n    function _safeMint(address to, uint256 quantity) internal {\n        _safeMint(to, quantity, '');\n    }\n\n    /**\n     * @dev Safely mints `quantity` tokens and transfers them to `to`.\n     *\n     * Requirements:\n     *\n     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called for each safe transfer.\n     * - `quantity` must be greater than 0.\n     *\n     * Emits a {Transfer} event.\n     */\n    function _safeMint(\n        address to,\n        uint256 quantity,\n        bytes memory _data\n    ) internal {\n        _mint(to, quantity, _data, true);\n    }\n\n    /**\n     * @dev Mints `quantity` tokens and transfers them to `to`.\n     *\n     * Requirements:\n     *\n     * - `to` cannot be the zero address.\n     * - `quantity` must be greater than 0.\n     *\n     * Emits a {Transfer} event.\n     */\n    function _mint(\n        address to,\n        uint256 quantity,\n        bytes memory _data,\n        bool safe\n    ) internal {\n        uint256 startTokenId = _currentIndex;\n        if (to == address(0)) revert MintToZeroAddress();\n        if (quantity == 0) revert MintZeroQuantity();\n\n        _beforeTokenTransfers(address(0), to, startTokenId, quantity);\n\n        // Overflows are incredibly unrealistic.\n        // balance or numberMinted overflow if current value of either + quantity > 1.8e19 (2**64) - 1\n        // updatedIndex overflows if _currentIndex + quantity > 1.2e77 (2**256) - 1\n        unchecked {\n            _addressData[to].balance += uint64(quantity);\n            _addressData[to].numberMinted += uint64(quantity);\n\n            _ownerships[startTokenId].addr = to;\n            _ownerships[startTokenId].startTimestamp = uint64(block.timestamp);\n\n            uint256 updatedIndex = startTokenId;\n            uint256 end = updatedIndex + quantity;\n\n            if (safe && to.isContract()) {\n                do {\n                    emit Transfer(address(0), to, updatedIndex);\n                    if (!_checkContractOnERC721Received(address(0), to, updatedIndex++, _data)) {\n                        revert TransferToNonERC721ReceiverImplementer();\n                    }\n                } while (updatedIndex != end);\n                // Reentrancy protection\n                if (_currentIndex != startTokenId) revert();\n            } else {\n                do {\n                    emit Transfer(address(0), to, updatedIndex++);\n                } while (updatedIndex != end);\n            }\n            _currentIndex = updatedIndex;\n        }\n        _afterTokenTransfers(address(0), to, startTokenId, quantity);\n    }\n\n    /**\n     * @dev Transfers `tokenId` from `from` to `to`.\n     *\n     * Requirements:\n     *\n     * - `to` cannot be the zero address.\n     * - `tokenId` token must be owned by `from`.\n     *\n     * Emits a {Transfer} event.\n     */\n    function _transfer(\n        address from,\n        address to,\n        uint256 tokenId\n    ) private {\n        TokenOwnership memory prevOwnership = _ownershipOf(tokenId);\n\n        if (prevOwnership.addr != from) revert TransferFromIncorrectOwner();\n\n        bool isApprovedOrOwner = (_msgSender() == from ||\n            isApprovedForAll(from, _msgSender()) ||\n            getApproved(tokenId) == _msgSender());\n\n        if (!isApprovedOrOwner) revert TransferCallerNotOwnerNorApproved();\n        if (to == address(0)) revert TransferToZeroAddress();\n\n        _beforeTokenTransfers(from, to, tokenId, 1);\n\n        // Clear approvals from the previous owner\n        _approve(address(0), tokenId, from);\n\n        // Underflow of the sender's balance is impossible because we check for\n        // ownership above and the recipient's balance can't realistically overflow.\n        // Counter overflow is incredibly unrealistic as tokenId would have to be 2**256.\n        unchecked {\n            _addressData[from].balance -= 1;\n            _addressData[to].balance += 1;\n\n            TokenOwnership storage currSlot = _ownerships[tokenId];\n            currSlot.addr = to;\n            currSlot.startTimestamp = uint64(block.timestamp);\n\n            // If the ownership slot of tokenId+1 is not explicitly set, that means the transfer initiator owns it.\n            // Set the slot of tokenId+1 explicitly in storage to maintain correctness for ownerOf(tokenId+1) calls.\n            uint256 nextTokenId = tokenId + 1;\n            TokenOwnership storage nextSlot = _ownerships[nextTokenId];\n            if (nextSlot.addr == address(0)) {\n                // This will suffice for checking _exists(nextTokenId),\n                // as a burned slot cannot contain the zero address.\n                if (nextTokenId != _currentIndex) {\n                    nextSlot.addr = from;\n                    nextSlot.startTimestamp = prevOwnership.startTimestamp;\n                }\n            }\n        }\n\n        emit Transfer(from, to, tokenId);\n        _afterTokenTransfers(from, to, tokenId, 1);\n    }\n\n    /**\n     * @dev This is equivalent to _burn(tokenId, false)\n     */\n    function _burn(uint256 tokenId) internal virtual {\n        _burn(tokenId, false);\n    }\n\n    /**\n     * @dev Destroys `tokenId`.\n     * The approval is cleared when the token is burned.\n     *\n     * Requirements:\n     *\n     * - `tokenId` must exist.\n     *\n     * Emits a {Transfer} event.\n     */\n    function _burn(uint256 tokenId, bool approvalCheck) internal virtual {\n        TokenOwnership memory prevOwnership = _ownershipOf(tokenId);\n\n        address from = prevOwnership.addr;\n\n        if (approvalCheck) {\n            bool isApprovedOrOwner = (_msgSender() == from ||\n                isApprovedForAll(from, _msgSender()) ||\n                getApproved(tokenId) == _msgSender());\n\n            if (!isApprovedOrOwner) revert TransferCallerNotOwnerNorApproved();\n        }\n\n        _beforeTokenTransfers(from, address(0), tokenId, 1);\n\n        // Clear approvals from the previous owner\n        _approve(address(0), tokenId, from);\n\n        // Underflow of the sender's balance is impossible because we check for\n        // ownership above and the recipient's balance can't realistically overflow.\n        // Counter overflow is incredibly unrealistic as tokenId would have to be 2**256.\n        unchecked {\n            AddressData storage addressData = _addressData[from];\n            addressData.balance -= 1;\n            addressData.numberBurned += 1;\n\n            // Keep track of who burned the token, and the timestamp of burning.\n            TokenOwnership storage currSlot = _ownerships[tokenId];\n            currSlot.addr = from;\n            currSlot.startTimestamp = uint64(block.timestamp);\n            currSlot.burned = true;\n\n            // If the ownership slot of tokenId+1 is not explicitly set, that means the burn initiator owns it.\n            // Set the slot of tokenId+1 explicitly in storage to maintain correctness for ownerOf(tokenId+1) calls.\n            uint256 nextTokenId = tokenId + 1;\n            TokenOwnership storage nextSlot = _ownerships[nextTokenId];\n            if (nextSlot.addr == address(0)) {\n                // This will suffice for checking _exists(nextTokenId),\n                // as a burned slot cannot contain the zero address.\n                if (nextTokenId != _currentIndex) {\n                    nextSlot.addr = from;\n                    nextSlot.startTimestamp = prevOwnership.startTimestamp;\n                }\n            }\n        }\n\n        emit Transfer(from, address(0), tokenId);\n        _afterTokenTransfers(from, address(0), tokenId, 1);\n\n        // Overflow not possible, as _burnCounter cannot be exceed _currentIndex times.\n        unchecked {\n            _burnCounter++;\n        }\n    }\n\n    /**\n     * @dev Approve `to` to operate on `tokenId`\n     *\n     * Emits a {Approval} event.\n     */\n    function _approve(\n        address to,\n        uint256 tokenId,\n        address owner\n    ) private {\n        _tokenApprovals[tokenId] = to;\n        emit Approval(owner, to, tokenId);\n    }\n\n    /**\n     * @dev Internal function to invoke {IERC721Receiver-onERC721Received} on a target contract.\n     *\n     * @param from address representing the previous owner of the given token ID\n     * @param to target address that will receive the tokens\n     * @param tokenId uint256 ID of the token to be transferred\n     * @param _data bytes optional data to send along with the call\n     * @return bool whether the call correctly returned the expected magic value\n     */\n    function _checkContractOnERC721Received(\n        address from,\n        address to,\n        uint256 tokenId,\n        bytes memory _data\n    ) private returns (bool) {\n        try IERC721ReceiverUpgradeable(to).onERC721Received(_msgSender(), from, tokenId, _data) returns (bytes4 retval) {\n            return retval == IERC721ReceiverUpgradeable(to).onERC721Received.selector;\n        } catch (bytes memory reason) {\n            if (reason.length == 0) {\n                revert TransferToNonERC721ReceiverImplementer();\n            } else {\n                assembly {\n                    revert(add(32, reason), mload(reason))\n                }\n            }\n        }\n    }\n\n    /**\n     * @dev Hook that is called before a set of serially-ordered token ids are about to be transferred. This includes minting.\n     * And also called before burning one token.\n     *\n     * startTokenId - the first token id to be transferred\n     * quantity - the amount to be transferred\n     *\n     * Calling conditions:\n     *\n     * - When `from` and `to` are both non-zero, `from`'s `tokenId` will be\n     * transferred to `to`.\n     * - When `from` is zero, `tokenId` will be minted for `to`.\n     * - When `to` is zero, `tokenId` will be burned by `from`.\n     * - `from` and `to` are never both zero.\n     */\n    function _beforeTokenTransfers(\n        address from,\n        address to,\n        uint256 startTokenId,\n        uint256 quantity\n    ) internal virtual {}\n\n    /**\n     * @dev Hook that is called after a set of serially-ordered token ids have been transferred. This includes\n     * minting.\n     * And also called after one token has been burned.\n     *\n     * startTokenId - the first token id to be transferred\n     * quantity - the amount to be transferred\n     *\n     * Calling conditions:\n     *\n     * - When `from` and `to` are both non-zero, `from`'s `tokenId` has been\n     * transferred to `to`.\n     * - When `from` is zero, `tokenId` has been minted for `to`.\n     * - When `to` is zero, `tokenId` has been burned by `from`.\n     * - `from` and `to` are never both zero.\n     */\n    function _afterTokenTransfers(\n        address from,\n        address to,\n        uint256 startTokenId,\n        uint256 quantity\n    ) internal virtual {}\n\n    /**\n     * @dev This empty reserved space is put in place to allow future versions to add new\n     * variables without shifting down storage in the inheritance chain.\n     * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps\n     */\n    uint256[42] private __gap;\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/access/AccessControlUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts (last updated v4.5.0) (access/AccessControl.sol)\n\npragma solidity ^0.8.0;\n\nimport \"./IAccessControlUpgradeable.sol\";\nimport \"../utils/ContextUpgradeable.sol\";\nimport \"../utils/StringsUpgradeable.sol\";\nimport \"../utils/introspection/ERC165Upgradeable.sol\";\nimport \"../proxy/utils/Initializable.sol\";\n\n/**\n * @dev Contract module that allows children to implement role-based access\n * control mechanisms. This is a lightweight version that doesn't allow enumerating role\n * members except through off-chain means by accessing the contract event logs. Some\n * applications may benefit from on-chain enumerability, for those cases see\n * {AccessControlEnumerable}.\n *\n * Roles are referred to by their `bytes32` identifier. These should be exposed\n * in the external API and be unique. The best way to achieve this is by\n * using `public constant` hash digests:\n *\n * ```\n * bytes32 public constant MY_ROLE = keccak256(\"MY_ROLE\");\n * ```\n *\n * Roles can be used to represent a set of permissions. To restrict access to a\n * function call, use {hasRole}:\n *\n * ```\n * function foo() public {\n *     require(hasRole(MY_ROLE, msg.sender));\n *     ...\n * }\n * ```\n *\n * Roles can be granted and revoked dynamically via the {grantRole} and\n * {revokeRole} functions. Each role has an associated admin role, and only\n * accounts that have a role's admin role can call {grantRole} and {revokeRole}.\n *\n * By default, the admin role for all roles is `DEFAULT_ADMIN_ROLE`, which means\n * that only accounts with this role will be able to grant or revoke other\n * roles. More complex role relationships can be created by using\n * {_setRoleAdmin}.\n *\n * WARNING: The `DEFAULT_ADMIN_ROLE` is also its own admin: it has permission to\n * grant and revoke this role. Extra precautions should be taken to secure\n * accounts that have been granted it.\n */\nabstract contract AccessControlUpgradeable is Initializable, ContextUpgradeable, IAccessControlUpgradeable, ERC165Upgradeable {\n    function __AccessControl_init() internal onlyInitializing {\n    }\n\n    function __AccessControl_init_unchained() internal onlyInitializing {\n    }\n    struct RoleData {\n        mapping(address => bool) members;\n        bytes32 adminRole;\n    }\n\n    mapping(bytes32 => RoleData) private _roles;\n\n    bytes32 public constant DEFAULT_ADMIN_ROLE = 0x00;\n\n    /**\n     * @dev Modifier that checks that an account has a specific role. Reverts\n     * with a standardized message including the required role.\n     *\n     * The format of the revert reason is given by the following regular expression:\n     *\n     *  /^AccessControl: account (0x[0-9a-f]{40}) is missing role (0x[0-9a-f]{64})$/\n     *\n     * _Available since v4.1._\n     */\n    modifier onlyRole(bytes32 role) {\n        _checkRole(role);\n        _;\n    }\n\n    /**\n     * @dev See {IERC165-supportsInterface}.\n     */\n    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {\n        return interfaceId == type(IAccessControlUpgradeable).interfaceId || super.supportsInterface(interfaceId);\n    }\n\n    /**\n     * @dev Returns `true` if `account` has been granted `role`.\n     */\n    function hasRole(bytes32 role, address account) public view virtual override returns (bool) {\n        return _roles[role].members[account];\n    }\n\n    /**\n     * @dev Revert with a standard message if `_msgSender()` is missing `role`.\n     * Overriding this function changes the behavior of the {onlyRole} modifier.\n     *\n     * Format of the revert message is described in {_checkRole}.\n     *\n     * _Available since v4.6._\n     */\n    function _checkRole(bytes32 role) internal view virtual {\n        _checkRole(role, _msgSender());\n    }\n\n    /**\n     * @dev Revert with a standard message if `account` is missing `role`.\n     *\n     * The format of the revert reason is given by the following regular expression:\n     *\n     *  /^AccessControl: account (0x[0-9a-f]{40}) is missing role (0x[0-9a-f]{64})$/\n     */\n    function _checkRole(bytes32 role, address account) internal view virtual {\n        if (!hasRole(role, account)) {\n            revert(\n                string(\n                    abi.encodePacked(\n                        \"AccessControl: account \",\n                        StringsUpgradeable.toHexString(uint160(account), 20),\n                        \" is missing role \",\n                        StringsUpgradeable.toHexString(uint256(role), 32)\n                    )\n                )\n            );\n        }\n    }\n\n    /**\n     * @dev Returns the admin role that controls `role`. See {grantRole} and\n     * {revokeRole}.\n     *\n     * To change a role's admin, use {_setRoleAdmin}.\n     */\n    function getRoleAdmin(bytes32 role) public view virtual override returns (bytes32) {\n        return _roles[role].adminRole;\n    }\n\n    /**\n     * @dev Grants `role` to `account`.\n     *\n     * If `account` had not been already granted `role`, emits a {RoleGranted}\n     * event.\n     *\n     * Requirements:\n     *\n     * - the caller must have ``role``'s admin role.\n     */\n    function grantRole(bytes32 role, address account) public virtual override onlyRole(getRoleAdmin(role)) {\n        _grantRole(role, account);\n    }\n\n    /**\n     * @dev Revokes `role` from `account`.\n     *\n     * If `account` had been granted `role`, emits a {RoleRevoked} event.\n     *\n     * Requirements:\n     *\n     * - the caller must have ``role``'s admin role.\n     */\n    function revokeRole(bytes32 role, address account) public virtual override onlyRole(getRoleAdmin(role)) {\n        _revokeRole(role, account);\n    }\n\n    /**\n     * @dev Revokes `role` from the calling account.\n     *\n     * Roles are often managed via {grantRole} and {revokeRole}: this function's\n     * purpose is to provide a mechanism for accounts to lose their privileges\n     * if they are compromised (such as when a trusted device is misplaced).\n     *\n     * If the calling account had been revoked `role`, emits a {RoleRevoked}\n     * event.\n     *\n     * Requirements:\n     *\n     * - the caller must be `account`.\n     */\n    function renounceRole(bytes32 role, address account) public virtual override {\n        require(account == _msgSender(), \"AccessControl: can only renounce roles for self\");\n\n        _revokeRole(role, account);\n    }\n\n    /**\n     * @dev Grants `role` to `account`.\n     *\n     * If `account` had not been already granted `role`, emits a {RoleGranted}\n     * event. Note that unlike {grantRole}, this function doesn't perform any\n     * checks on the calling account.\n     *\n     * [WARNING]\n     * ====\n     * This function should only be called from the constructor when setting\n     * up the initial roles for the system.\n     *\n     * Using this function in any other way is effectively circumventing the admin\n     * system imposed by {AccessControl}.\n     * ====\n     *\n     * NOTE: This function is deprecated in favor of {_grantRole}.\n     */\n    function _setupRole(bytes32 role, address account) internal virtual {\n        _grantRole(role, account);\n    }\n\n    /**\n     * @dev Sets `adminRole` as ``role``'s admin role.\n     *\n     * Emits a {RoleAdminChanged} event.\n     */\n    function _setRoleAdmin(bytes32 role, bytes32 adminRole) internal virtual {\n        bytes32 previousAdminRole = getRoleAdmin(role);\n        _roles[role].adminRole = adminRole;\n        emit RoleAdminChanged(role, previousAdminRole, adminRole);\n    }\n\n    /**\n     * @dev Grants `role` to `account`.\n     *\n     * Internal function without access restriction.\n     */\n    function _grantRole(bytes32 role, address account) internal virtual {\n        if (!hasRole(role, account)) {\n            _roles[role].members[account] = true;\n            emit RoleGranted(role, account, _msgSender());\n        }\n    }\n\n    /**\n     * @dev Revokes `role` from `account`.\n     *\n     * Internal function without access restriction.\n     */\n    function _revokeRole(bytes32 role, address account) internal virtual {\n        if (hasRole(role, account)) {\n            _roles[role].members[account] = false;\n            emit RoleRevoked(role, account, _msgSender());\n        }\n    }\n\n    /**\n     * @dev This empty reserved space is put in place to allow future versions to add new\n     * variables without shifting down storage in the inheritance chain.\n     * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps\n     */\n    uint256[49] private __gap;\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/access/IAccessControlUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (access/IAccessControl.sol)\n\npragma solidity ^0.8.0;\n\n/**\n * @dev External interface of AccessControl declared to support ERC165 detection.\n */\ninterface IAccessControlUpgradeable {\n    /**\n     * @dev Emitted when `newAdminRole` is set as ``role``'s admin role, replacing `previousAdminRole`\n     *\n     * `DEFAULT_ADMIN_ROLE` is the starting admin for all roles, despite\n     * {RoleAdminChanged} not being emitted signaling this.\n     *\n     * _Available since v3.1._\n     */\n    event RoleAdminChanged(bytes32 indexed role, bytes32 indexed previousAdminRole, bytes32 indexed newAdminRole);\n\n    /**\n     * @dev Emitted when `account` is granted `role`.\n     *\n     * `sender` is the account that originated the contract call, an admin role\n     * bearer except when using {AccessControl-_setupRole}.\n     */\n    event RoleGranted(bytes32 indexed role, address indexed account, address indexed sender);\n\n    /**\n     * @dev Emitted when `account` is revoked `role`.\n     *\n     * `sender` is the account that originated the contract call:\n     *   - if using `revokeRole`, it is the admin role bearer\n     *   - if using `renounceRole`, it is the role bearer (i.e. `account`)\n     */\n    event RoleRevoked(bytes32 indexed role, address indexed account, address indexed sender);\n\n    /**\n     * @dev Returns `true` if `account` has been granted `role`.\n     */\n    function hasRole(bytes32 role, address account) external view returns (bool);\n\n    /**\n     * @dev Returns the admin role that controls `role`. See {grantRole} and\n     * {revokeRole}.\n     *\n     * To change a role's admin, use {AccessControl-_setRoleAdmin}.\n     */\n    function getRoleAdmin(bytes32 role) external view returns (bytes32);\n\n    /**\n     * @dev Grants `role` to `account`.\n     *\n     * If `account` had not been already granted `role`, emits a {RoleGranted}\n     * event.\n     *\n     * Requirements:\n     *\n     * - the caller must have ``role``'s admin role.\n     */\n    function grantRole(bytes32 role, address account) external;\n\n    /**\n     * @dev Revokes `role` from `account`.\n     *\n     * If `account` had been granted `role`, emits a {RoleRevoked} event.\n     *\n     * Requirements:\n     *\n     * - the caller must have ``role``'s admin role.\n     */\n    function revokeRole(bytes32 role, address account) external;\n\n    /**\n     * @dev Revokes `role` from the calling account.\n     *\n     * Roles are often managed via {grantRole} and {revokeRole}: this function's\n     * purpose is to provide a mechanism for accounts to lose their privileges\n     * if they are compromised (such as when a trusted device is misplaced).\n     *\n     * If the calling account had been granted `role`, emits a {RoleRevoked}\n     * event.\n     *\n     * Requirements:\n     *\n     * - the caller must be `account`.\n     */\n    function renounceRole(bytes32 role, address account) external;\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/interfaces/IERC2981Upgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts (last updated v4.5.0) (interfaces/IERC2981.sol)\n\npragma solidity ^0.8.0;\n\nimport \"../utils/introspection/IERC165Upgradeable.sol\";\n\n/**\n * @dev Interface for the NFT Royalty Standard.\n *\n * A standardized way to retrieve royalty payment information for non-fungible tokens (NFTs) to enable universal\n * support for royalty payments across all NFT marketplaces and ecosystem participants.\n *\n * _Available since v4.5._\n */\ninterface IERC2981Upgradeable is IERC165Upgradeable {\n    /**\n     * @dev Returns how much royalty is owed and to whom, based on a sale price that may be denominated in any unit of\n     * exchange. The royalty amount is denominated and should be payed in that same unit of exchange.\n     */\n    function royaltyInfo(uint256 tokenId, uint256 salePrice)\n        external\n        view\n        returns (address receiver, uint256 royaltyAmount);\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/proxy/utils/Initializable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts (last updated v4.5.0) (proxy/utils/Initializable.sol)\n\npragma solidity ^0.8.0;\n\nimport \"../../utils/AddressUpgradeable.sol\";\n\n/**\n * @dev This is a base contract to aid in writing upgradeable contracts, or any kind of contract that will be deployed\n * behind a proxy. Since proxied contracts do not make use of a constructor, it's common to move constructor logic to an\n * external initializer function, usually called `initialize`. It then becomes necessary to protect this initializer\n * function so it can only be called once. The {initializer} modifier provided by this contract will have this effect.\n *\n * TIP: To avoid leaving the proxy in an uninitialized state, the initializer function should be called as early as\n * possible by providing the encoded function call as the `_data` argument to {ERC1967Proxy-constructor}.\n *\n * CAUTION: When used with inheritance, manual care must be taken to not invoke a parent initializer twice, or to ensure\n * that all initializers are idempotent. This is not verified automatically as constructors are by Solidity.\n *\n * [CAUTION]\n * ====\n * Avoid leaving a contract uninitialized.\n *\n * An uninitialized contract can be taken over by an attacker. This applies to both a proxy and its implementation\n * contract, which may impact the proxy. To initialize the implementation contract, you can either invoke the\n * initializer manually, or you can include a constructor to automatically mark it as initialized when it is deployed:\n *\n * [.hljs-theme-light.nopadding]\n * ```\n * /// @custom:oz-upgrades-unsafe-allow constructor\n * constructor() initializer {}\n * ```\n * ====\n */\nabstract contract Initializable {\n    /**\n     * @dev Indicates that the contract has been initialized.\n     */\n    bool private _initialized;\n\n    /**\n     * @dev Indicates that the contract is in the process of being initialized.\n     */\n    bool private _initializing;\n\n    /**\n     * @dev Modifier to protect an initializer function from being invoked twice.\n     */\n    modifier initializer() {\n        // If the contract is initializing we ignore whether _initialized is set in order to support multiple\n        // inheritance patterns, but we only do this in the context of a constructor, because in other contexts the\n        // contract may have been reentered.\n        require(_initializing ? _isConstructor() : !_initialized, \"Initializable: contract is already initialized\");\n\n        bool isTopLevelCall = !_initializing;\n        if (isTopLevelCall) {\n            _initializing = true;\n            _initialized = true;\n        }\n\n        _;\n\n        if (isTopLevelCall) {\n            _initializing = false;\n        }\n    }\n\n    /**\n     * @dev Modifier to protect an initialization function so that it can only be invoked by functions with the\n     * {initializer} modifier, directly or indirectly.\n     */\n    modifier onlyInitializing() {\n        require(_initializing, \"Initializable: contract is not initializing\");\n        _;\n    }\n\n    function _isConstructor() private view returns (bool) {\n        return !AddressUpgradeable.isContract(address(this));\n    }\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/security/ReentrancyGuardUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (security/ReentrancyGuard.sol)\n\npragma solidity ^0.8.0;\nimport \"../proxy/utils/Initializable.sol\";\n\n/**\n * @dev Contract module that helps prevent reentrant calls to a function.\n *\n * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier\n * available, which can be applied to functions to make sure there are no nested\n * (reentrant) calls to them.\n *\n * Note that because there is a single `nonReentrant` guard, functions marked as\n * `nonReentrant` may not call one another. This can be worked around by making\n * those functions `private`, and then adding `external` `nonReentrant` entry\n * points to them.\n *\n * TIP: If you would like to learn more about reentrancy and alternative ways\n * to protect against it, check out our blog post\n * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].\n */\nabstract contract ReentrancyGuardUpgradeable is Initializable {\n    // Booleans are more expensive than uint256 or any type that takes up a full\n    // word because each write operation emits an extra SLOAD to first read the\n    // slot's contents, replace the bits taken up by the boolean, and then write\n    // back. This is the compiler's defense against contract upgrades and\n    // pointer aliasing, and it cannot be disabled.\n\n    // The values being non-zero value makes deployment a bit more expensive,\n    // but in exchange the refund on every call to nonReentrant will be lower in\n    // amount. Since refunds are capped to a percentage of the total\n    // transaction's gas, it is best to keep them low in cases like this one, to\n    // increase the likelihood of the full refund coming into effect.\n    uint256 private constant _NOT_ENTERED = 1;\n    uint256 private constant _ENTERED = 2;\n\n    uint256 private _status;\n\n    function __ReentrancyGuard_init() internal onlyInitializing {\n        __ReentrancyGuard_init_unchained();\n    }\n\n    function __ReentrancyGuard_init_unchained() internal onlyInitializing {\n        _status = _NOT_ENTERED;\n    }\n\n    /**\n     * @dev Prevents a contract from calling itself, directly or indirectly.\n     * Calling a `nonReentrant` function from another `nonReentrant`\n     * function is not supported. It is possible to prevent this from happening\n     * by making the `nonReentrant` function external, and making it call a\n     * `private` function that does the actual work.\n     */\n    modifier nonReentrant() {\n        // On the first call to nonReentrant, _notEntered will be true\n        require(_status != _ENTERED, \"ReentrancyGuard: reentrant call\");\n\n        // Any calls to nonReentrant after this point will fail\n        _status = _ENTERED;\n\n        _;\n\n        // By storing the original value once again, a refund is triggered (see\n        // https://eips.ethereum.org/EIPS/eip-2200)\n        _status = _NOT_ENTERED;\n    }\n\n    /**\n     * @dev This empty reserved space is put in place to allow future versions to add new\n     * variables without shifting down storage in the inheritance chain.\n     * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps\n     */\n    uint256[49] private __gap;\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/token/ERC721/IERC721ReceiverUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (token/ERC721/IERC721Receiver.sol)\n\npragma solidity ^0.8.0;\n\n/**\n * @title ERC721 token receiver interface\n * @dev Interface for any contract that wants to support safeTransfers\n * from ERC721 asset contracts.\n */\ninterface IERC721ReceiverUpgradeable {\n    /**\n     * @dev Whenever an {IERC721} `tokenId` token is transferred to this contract via {IERC721-safeTransferFrom}\n     * by `operator` from `from`, this function is called.\n     *\n     * It must return its Solidity selector to confirm the token transfer.\n     * If any other value is returned or the interface is not implemented by the recipient, the transfer will be reverted.\n     *\n     * The selector can be obtained in Solidity with `IERC721Receiver.onERC721Received.selector`.\n     */\n    function onERC721Received(\n        address operator,\n        address from,\n        uint256 tokenId,\n        bytes calldata data\n    ) external returns (bytes4);\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/token/ERC721/IERC721Upgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (token/ERC721/IERC721.sol)\n\npragma solidity ^0.8.0;\n\nimport \"../../utils/introspection/IERC165Upgradeable.sol\";\n\n/**\n * @dev Required interface of an ERC721 compliant contract.\n */\ninterface IERC721Upgradeable is IERC165Upgradeable {\n    /**\n     * @dev Emitted when `tokenId` token is transferred from `from` to `to`.\n     */\n    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);\n\n    /**\n     * @dev Emitted when `owner` enables `approved` to manage the `tokenId` token.\n     */\n    event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);\n\n    /**\n     * @dev Emitted when `owner` enables or disables (`approved`) `operator` to manage all of its assets.\n     */\n    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);\n\n    /**\n     * @dev Returns the number of tokens in ``owner``'s account.\n     */\n    function balanceOf(address owner) external view returns (uint256 balance);\n\n    /**\n     * @dev Returns the owner of the `tokenId` token.\n     *\n     * Requirements:\n     *\n     * - `tokenId` must exist.\n     */\n    function ownerOf(uint256 tokenId) external view returns (address owner);\n\n    /**\n     * @dev Safely transfers `tokenId` token from `from` to `to`, checking first that contract recipients\n     * are aware of the ERC721 protocol to prevent tokens from being forever locked.\n     *\n     * Requirements:\n     *\n     * - `from` cannot be the zero address.\n     * - `to` cannot be the zero address.\n     * - `tokenId` token must exist and be owned by `from`.\n     * - If the caller is not `from`, it must be have been allowed to move this token by either {approve} or {setApprovalForAll}.\n     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.\n     *\n     * Emits a {Transfer} event.\n     */\n    function safeTransferFrom(\n        address from,\n        address to,\n        uint256 tokenId\n    ) external;\n\n    /**\n     * @dev Transfers `tokenId` token from `from` to `to`.\n     *\n     * WARNING: Usage of this method is discouraged, use {safeTransferFrom} whenever possible.\n     *\n     * Requirements:\n     *\n     * - `from` cannot be the zero address.\n     * - `to` cannot be the zero address.\n     * - `tokenId` token must be owned by `from`.\n     * - If the caller is not `from`, it must be approved to move this token by either {approve} or {setApprovalForAll}.\n     *\n     * Emits a {Transfer} event.\n     */\n    function transferFrom(\n        address from,\n        address to,\n        uint256 tokenId\n    ) external;\n\n    /**\n     * @dev Gives permission to `to` to transfer `tokenId` token to another account.\n     * The approval is cleared when the token is transferred.\n     *\n     * Only a single account can be approved at a time, so approving the zero address clears previous approvals.\n     *\n     * Requirements:\n     *\n     * - The caller must own the token or be an approved operator.\n     * - `tokenId` must exist.\n     *\n     * Emits an {Approval} event.\n     */\n    function approve(address to, uint256 tokenId) external;\n\n    /**\n     * @dev Returns the account approved for `tokenId` token.\n     *\n     * Requirements:\n     *\n     * - `tokenId` must exist.\n     */\n    function getApproved(uint256 tokenId) external view returns (address operator);\n\n    /**\n     * @dev Approve or remove `operator` as an operator for the caller.\n     * Operators can call {transferFrom} or {safeTransferFrom} for any token owned by the caller.\n     *\n     * Requirements:\n     *\n     * - The `operator` cannot be the caller.\n     *\n     * Emits an {ApprovalForAll} event.\n     */\n    function setApprovalForAll(address operator, bool _approved) external;\n\n    /**\n     * @dev Returns if the `operator` is allowed to manage all of the assets of `owner`.\n     *\n     * See {setApprovalForAll}\n     */\n    function isApprovedForAll(address owner, address operator) external view returns (bool);\n\n    /**\n     * @dev Safely transfers `tokenId` token from `from` to `to`.\n     *\n     * Requirements:\n     *\n     * - `from` cannot be the zero address.\n     * - `to` cannot be the zero address.\n     * - `tokenId` token must exist and be owned by `from`.\n     * - If the caller is not `from`, it must be approved to move this token by either {approve} or {setApprovalForAll}.\n     * - If `to` refers to a smart contract, it must implement {IERC721Receiver-onERC721Received}, which is called upon a safe transfer.\n     *\n     * Emits a {Transfer} event.\n     */\n    function safeTransferFrom(\n        address from,\n        address to,\n        uint256 tokenId,\n        bytes calldata data\n    ) external;\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/token/ERC721/extensions/IERC721MetadataUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (token/ERC721/extensions/IERC721Metadata.sol)\n\npragma solidity ^0.8.0;\n\nimport \"../IERC721Upgradeable.sol\";\n\n/**\n * @title ERC-721 Non-Fungible Token Standard, optional metadata extension\n * @dev See https://eips.ethereum.org/EIPS/eip-721\n */\ninterface IERC721MetadataUpgradeable is IERC721Upgradeable {\n    /**\n     * @dev Returns the token collection name.\n     */\n    function name() external view returns (string memory);\n\n    /**\n     * @dev Returns the token collection symbol.\n     */\n    function symbol() external view returns (string memory);\n\n    /**\n     * @dev Returns the Uniform Resource Identifier (URI) for `tokenId` token.\n     */\n    function tokenURI(uint256 tokenId) external view returns (string memory);\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/utils/AddressUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts (last updated v4.5.0) (utils/Address.sol)\n\npragma solidity ^0.8.1;\n\n/**\n * @dev Collection of functions related to the address type\n */\nlibrary AddressUpgradeable {\n    /**\n     * @dev Returns true if `account` is a contract.\n     *\n     * [IMPORTANT]\n     * ====\n     * It is unsafe to assume that an address for which this function returns\n     * false is an externally-owned account (EOA) and not a contract.\n     *\n     * Among others, `isContract` will return false for the following\n     * types of addresses:\n     *\n     *  - an externally-owned account\n     *  - a contract in construction\n     *  - an address where a contract will be created\n     *  - an address where a contract lived, but was destroyed\n     * ====\n     *\n     * [IMPORTANT]\n     * ====\n     * You shouldn't rely on `isContract` to protect against flash loan attacks!\n     *\n     * Preventing calls from contracts is highly discouraged. It breaks composability, breaks support for smart wallets\n     * like Gnosis Safe, and does not provide security since it can be circumvented by calling from a contract\n     * constructor.\n     * ====\n     */\n    function isContract(address account) internal view returns (bool) {\n        // This method relies on extcodesize/address.code.length, which returns 0\n        // for contracts in construction, since the code is only stored at the end\n        // of the constructor execution.\n\n        return account.code.length > 0;\n    }\n\n    /**\n     * @dev Replacement for Solidity's `transfer`: sends `amount` wei to\n     * `recipient`, forwarding all available gas and reverting on errors.\n     *\n     * https://eips.ethereum.org/EIPS/eip-1884[EIP1884] increases the gas cost\n     * of certain opcodes, possibly making contracts go over the 2300 gas limit\n     * imposed by `transfer`, making them unable to receive funds via\n     * `transfer`. {sendValue} removes this limitation.\n     *\n     * https://diligence.consensys.net/posts/2019/09/stop-using-soliditys-transfer-now/[Learn more].\n     *\n     * IMPORTANT: because control is transferred to `recipient`, care must be\n     * taken to not create reentrancy vulnerabilities. Consider using\n     * {ReentrancyGuard} or the\n     * https://solidity.readthedocs.io/en/v0.5.11/security-considerations.html#use-the-checks-effects-interactions-pattern[checks-effects-interactions pattern].\n     */\n    function sendValue(address payable recipient, uint256 amount) internal {\n        require(address(this).balance >= amount, \"Address: insufficient balance\");\n\n        (bool success, ) = recipient.call{value: amount}(\"\");\n        require(success, \"Address: unable to send value, recipient may have reverted\");\n    }\n\n    /**\n     * @dev Performs a Solidity function call using a low level `call`. A\n     * plain `call` is an unsafe replacement for a function call: use this\n     * function instead.\n     *\n     * If `target` reverts with a revert reason, it is bubbled up by this\n     * function (like regular Solidity function calls).\n     *\n     * Returns the raw returned data. To convert to the expected return value,\n     * use https://solidity.readthedocs.io/en/latest/units-and-global-variables.html?highlight=abi.decode#abi-encoding-and-decoding-functions[`abi.decode`].\n     *\n     * Requirements:\n     *\n     * - `target` must be a contract.\n     * - calling `target` with `data` must not revert.\n     *\n     * _Available since v3.1._\n     */\n    function functionCall(address target, bytes memory data) internal returns (bytes memory) {\n        return functionCall(target, data, \"Address: low-level call failed\");\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`], but with\n     * `errorMessage` as a fallback revert reason when `target` reverts.\n     *\n     * _Available since v3.1._\n     */\n    function functionCall(\n        address target,\n        bytes memory data,\n        string memory errorMessage\n    ) internal returns (bytes memory) {\n        return functionCallWithValue(target, data, 0, errorMessage);\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],\n     * but also transferring `value` wei to `target`.\n     *\n     * Requirements:\n     *\n     * - the calling contract must have an ETH balance of at least `value`.\n     * - the called Solidity function must be `payable`.\n     *\n     * _Available since v3.1._\n     */\n    function functionCallWithValue(\n        address target,\n        bytes memory data,\n        uint256 value\n    ) internal returns (bytes memory) {\n        return functionCallWithValue(target, data, value, \"Address: low-level call with value failed\");\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCallWithValue-address-bytes-uint256-}[`functionCallWithValue`], but\n     * with `errorMessage` as a fallback revert reason when `target` reverts.\n     *\n     * _Available since v3.1._\n     */\n    function functionCallWithValue(\n        address target,\n        bytes memory data,\n        uint256 value,\n        string memory errorMessage\n    ) internal returns (bytes memory) {\n        require(address(this).balance >= value, \"Address: insufficient balance for call\");\n        require(isContract(target), \"Address: call to non-contract\");\n\n        (bool success, bytes memory returndata) = target.call{value: value}(data);\n        return verifyCallResult(success, returndata, errorMessage);\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],\n     * but performing a static call.\n     *\n     * _Available since v3.3._\n     */\n    function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {\n        return functionStaticCall(target, data, \"Address: low-level static call failed\");\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],\n     * but performing a static call.\n     *\n     * _Available since v3.3._\n     */\n    function functionStaticCall(\n        address target,\n        bytes memory data,\n        string memory errorMessage\n    ) internal view returns (bytes memory) {\n        require(isContract(target), \"Address: static call to non-contract\");\n\n        (bool success, bytes memory returndata) = target.staticcall(data);\n        return verifyCallResult(success, returndata, errorMessage);\n    }\n\n    /**\n     * @dev Tool to verifies that a low level call was successful, and revert if it wasn't, either by bubbling the\n     * revert reason using the provided one.\n     *\n     * _Available since v4.3._\n     */\n    function verifyCallResult(\n        bool success,\n        bytes memory returndata,\n        string memory errorMessage\n    ) internal pure returns (bytes memory) {\n        if (success) {\n            return returndata;\n        } else {\n            // Look for revert reason and bubble it up if present\n            if (returndata.length > 0) {\n                // The easiest way to bubble the revert reason is using memory via assembly\n\n                assembly {\n                    let returndata_size := mload(returndata)\n                    revert(add(32, returndata), returndata_size)\n                }\n            } else {\n                revert(errorMessage);\n            }\n        }\n    }\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/utils/ContextUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (utils/Context.sol)\n\npragma solidity ^0.8.0;\nimport \"../proxy/utils/Initializable.sol\";\n\n/**\n * @dev Provides information about the current execution context, including the\n * sender of the transaction and its data. While these are generally available\n * via msg.sender and msg.data, they should not be accessed in such a direct\n * manner, since when dealing with meta-transactions the account sending and\n * paying for execution may not be the actual sender (as far as an application\n * is concerned).\n *\n * This contract is only required for intermediate, library-like contracts.\n */\nabstract contract ContextUpgradeable is Initializable {\n    function __Context_init() internal onlyInitializing {\n    }\n\n    function __Context_init_unchained() internal onlyInitializing {\n    }\n    function _msgSender() internal view virtual returns (address) {\n        return msg.sender;\n    }\n\n    function _msgData() internal view virtual returns (bytes calldata) {\n        return msg.data;\n    }\n\n    /**\n     * @dev This empty reserved space is put in place to allow future versions to add new\n     * variables without shifting down storage in the inheritance chain.\n     * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps\n     */\n    uint256[50] private __gap;\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/utils/StringsUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (utils/Strings.sol)\n\npragma solidity ^0.8.0;\n\n/**\n * @dev String operations.\n */\nlibrary StringsUpgradeable {\n    bytes16 private constant _HEX_SYMBOLS = \"0123456789abcdef\";\n\n    /**\n     * @dev Converts a `uint256` to its ASCII `string` decimal representation.\n     */\n    function toString(uint256 value) internal pure returns (string memory) {\n        // Inspired by OraclizeAPI's implementation - MIT licence\n        // https://github.com/oraclize/ethereum-api/blob/b42146b063c7d6ee1358846c198246239e9360e8/oraclizeAPI_0.4.25.sol\n\n        if (value == 0) {\n            return \"0\";\n        }\n        uint256 temp = value;\n        uint256 digits;\n        while (temp != 0) {\n            digits++;\n            temp /= 10;\n        }\n        bytes memory buffer = new bytes(digits);\n        while (value != 0) {\n            digits -= 1;\n            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));\n            value /= 10;\n        }\n        return string(buffer);\n    }\n\n    /**\n     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation.\n     */\n    function toHexString(uint256 value) internal pure returns (string memory) {\n        if (value == 0) {\n            return \"0x00\";\n        }\n        uint256 temp = value;\n        uint256 length = 0;\n        while (temp != 0) {\n            length++;\n            temp >>= 8;\n        }\n        return toHexString(value, length);\n    }\n\n    /**\n     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation with fixed length.\n     */\n    function toHexString(uint256 value, uint256 length) internal pure returns (string memory) {\n        bytes memory buffer = new bytes(2 * length + 2);\n        buffer[0] = \"0\";\n        buffer[1] = \"x\";\n        for (uint256 i = 2 * length + 1; i > 1; --i) {\n            buffer[i] = _HEX_SYMBOLS[value & 0xf];\n            value >>= 4;\n        }\n        require(value == 0, \"Strings: hex length insufficient\");\n        return string(buffer);\n    }\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/utils/cryptography/MerkleProofUpgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts (last updated v4.5.0) (utils/cryptography/MerkleProof.sol)\n\npragma solidity ^0.8.0;\n\n/**\n * @dev These functions deal with verification of Merkle Trees proofs.\n *\n * The proofs can be generated using the JavaScript library\n * https://github.com/miguelmota/merkletreejs[merkletreejs].\n * Note: the hashing algorithm should be keccak256 and pair sorting should be enabled.\n *\n * See `test/utils/cryptography/MerkleProof.test.js` for some examples.\n *\n * WARNING: You should avoid using leaf values that are 64 bytes long prior to\n * hashing, or use a hash function other than keccak256 for hashing leaves.\n * This is because the concatenation of a sorted pair of internal nodes in\n * the merkle tree could be reinterpreted as a leaf value.\n */\nlibrary MerkleProofUpgradeable {\n    /**\n     * @dev Returns true if a `leaf` can be proved to be a part of a Merkle tree\n     * defined by `root`. For this, a `proof` must be provided, containing\n     * sibling hashes on the branch from the leaf to the root of the tree. Each\n     * pair of leaves and each pair of pre-images are assumed to be sorted.\n     */\n    function verify(\n        bytes32[] memory proof,\n        bytes32 root,\n        bytes32 leaf\n    ) internal pure returns (bool) {\n        return processProof(proof, leaf) == root;\n    }\n\n    /**\n     * @dev Returns the rebuilt hash obtained by traversing a Merkle tree up\n     * from `leaf` using `proof`. A `proof` is valid if and only if the rebuilt\n     * hash matches the root of the tree. When processing the proof, the pairs\n     * of leafs & pre-images are assumed to be sorted.\n     *\n     * _Available since v4.4._\n     */\n    function processProof(bytes32[] memory proof, bytes32 leaf) internal pure returns (bytes32) {\n        bytes32 computedHash = leaf;\n        for (uint256 i = 0; i < proof.length; i++) {\n            bytes32 proofElement = proof[i];\n            if (computedHash <= proofElement) {\n                // Hash(current computed hash + current element of the proof)\n                computedHash = _efficientHash(computedHash, proofElement);\n            } else {\n                // Hash(current element of the proof + current computed hash)\n                computedHash = _efficientHash(proofElement, computedHash);\n            }\n        }\n        return computedHash;\n    }\n\n    function _efficientHash(bytes32 a, bytes32 b) private pure returns (bytes32 value) {\n        assembly {\n            mstore(0x00, a)\n            mstore(0x20, b)\n            value := keccak256(0x00, 0x40)\n        }\n    }\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/utils/introspection/ERC165Upgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (utils/introspection/ERC165.sol)\n\npragma solidity ^0.8.0;\n\nimport \"./IERC165Upgradeable.sol\";\nimport \"../../proxy/utils/Initializable.sol\";\n\n/**\n * @dev Implementation of the {IERC165} interface.\n *\n * Contracts that want to implement ERC165 should inherit from this contract and override {supportsInterface} to check\n * for the additional interface id that will be supported. For example:\n *\n * ```solidity\n * function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {\n *     return interfaceId == type(MyInterface).interfaceId || super.supportsInterface(interfaceId);\n * }\n * ```\n *\n * Alternatively, {ERC165Storage} provides an easier to use but more expensive implementation.\n */\nabstract contract ERC165Upgradeable is Initializable, IERC165Upgradeable {\n    function __ERC165_init() internal onlyInitializing {\n    }\n\n    function __ERC165_init_unchained() internal onlyInitializing {\n    }\n    /**\n     * @dev See {IERC165-supportsInterface}.\n     */\n    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {\n        return interfaceId == type(IERC165Upgradeable).interfaceId;\n    }\n\n    /**\n     * @dev This empty reserved space is put in place to allow future versions to add new\n     * variables without shifting down storage in the inheritance chain.\n     * See https://docs.openzeppelin.com/contracts/4.x/upgradeable#storage_gaps\n     */\n    uint256[50] private __gap;\n}\n"
-    },
-    "lib/openzeppelin-contracts-upgradeable/contracts/utils/introspection/IERC165Upgradeable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (utils/introspection/IERC165.sol)\n\npragma solidity ^0.8.0;\n\n/**\n * @dev Interface of the ERC165 standard, as defined in the\n * https://eips.ethereum.org/EIPS/eip-165[EIP].\n *\n * Implementers can declare support of contract interfaces, which can then be\n * queried by others ({ERC165Checker}).\n *\n * For an implementation, see {ERC165}.\n */\ninterface IERC165Upgradeable {\n    /**\n     * @dev Returns true if this contract implements the interface defined by\n     * `interfaceId`. See the corresponding\n     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]\n     * to learn more about how these ids are created.\n     *\n     * This function call must use less than 30 000 gas.\n     */\n    function supportsInterface(bytes4 interfaceId) external view returns (bool);\n}\n"
-    }
-  },
-  "settings": {
-    "remappings": [
-      "@openzeppelin/contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/contracts/",
-      "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
-      "ERC721A-Upgradeable/=lib/ERC721A-Upgradeable/contracts/",
-      "base64/=lib/base64/",
-      "ds-test/=lib/ds-test/src/",
-      "erc721a-upgradeable/=lib/ERC721A-Upgradeable/contracts/",
-      "forge-std/=lib/forge-std/src/",
-      "openzeppelin-contracts-upgradeable/=lib/openzeppelin-contracts-upgradeable/",
-      "openzeppelin-contracts/=lib/openzeppelin-contracts/",
-      "contracts/=contracts/"
-    ],
-    "optimizer": {
-      "enabled": true,
-      "runs": 1000
-    },
-    "metadata": {
-      "bytecodeHash": "ipfs"
-    },
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "devdoc",
-          "userdoc",
-          "metadata",
-          "abi"
-        ]
-      }
-    },
-    "evmVersion": "london"
-  }
-}}
+// contracts/ERC721Drop.sol
+
+// SPDX-License-Identifier: GPL-3.0
+pragma solidity ^0.8.10;
+
+/**
+
+ ________   _____   ____    ______      ____
+/\_____  \ /\  __`\/\  _`\ /\  _  \    /\  _`\
+\/____//'/'\ \ \/\ \ \ \L\ \ \ \L\ \   \ \ \/\ \  _ __   ___   _____     ____
+     //'/'  \ \ \ \ \ \ ,  /\ \  __ \   \ \ \ \ \/\`'__\/ __`\/\ '__`\  /',__\
+    //'/'___ \ \ \_\ \ \ \\ \\ \ \/\ \   \ \ \_\ \ \ \//\ \L\ \ \ \L\ \/\__, `\
+    /\_______\\ \_____\ \_\ \_\ \_\ \_\   \ \____/\ \_\\ \____/\ \ ,__/\/\____/
+    \/_______/ \/_____/\/_/\/ /\/_/\/_/    \/___/  \/_/ \/___/  \ \ \/  \/___/
+                                                                 \ \_\
+                                                                  \/_/
+
+ */
+
+import {ERC721AUpgradeable} from "erc721a-upgradeable/ERC721AUpgradeable.sol";
+import {IERC2981Upgradeable, IERC165Upgradeable} from "@openzeppelin/contracts-upgradeable/interfaces/IERC2981Upgradeable.sol";
+import {AddressUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/AddressUpgradeable.sol";
+import {AccessControlUpgradeable} from "@openzeppelin/contracts-upgradeable/access/AccessControlUpgradeable.sol";
+import {ReentrancyGuardUpgradeable} from "@openzeppelin/contracts-upgradeable/security/ReentrancyGuardUpgradeable.sol";
+import {MerkleProofUpgradeable} from "@openzeppelin/contracts-upgradeable/utils/cryptography/MerkleProofUpgradeable.sol";
+
+import {IZoraFeeManager} from "./interfaces/IZoraFeeManager.sol";
+import {IMetadataRenderer} from "./interfaces/IMetadataRenderer.sol";
+import {IZoraDrop} from "./interfaces/IZoraDrop.sol";
+import {IOwnable} from "./interfaces/IOwnable.sol";
+import {OwnableSkeleton} from "./utils/OwnableSkeleton.sol";
+
+/**
+ * @notice ZORA NFT Base contract for Drops and Editions
+ *
+ * @dev For drops: assumes 1. linear mint order, 2. max number of mints needs to be less than max_uint64
+ *       (if you have more than 18 quintillion linear mints you should probably not be using this contract)
+ * @author iain@zora.co
+ *
+ */
+contract ERC721Drop is
+    ERC721AUpgradeable,
+    IERC2981Upgradeable,
+    ReentrancyGuardUpgradeable,
+    AccessControlUpgradeable,
+    IZoraDrop,
+    OwnableSkeleton
+{
+    /// @dev This is the underlying contract version that is implemented by the interface
+    uint256 private constant VERSION = 3;
+    /// @dev This is the max mint batch size for the optimized ERC721A mint contract
+    uint256 private constant MAX_MINT_BATCH_SIZE = 8;
+
+    using AddressUpgradeable for address payable;
+
+    event SalesConfigChanged(
+        address indexed changedBy,
+        SalesConfiguration salesConfig
+    );
+
+    event FundsRecipientChanged(
+        address indexed newAddress,
+        address indexed changedBy
+    );
+
+    event OpenMintFinalized(address indexed sender, uint256 numberOfMints);
+
+    /// @notice Error string constants
+    string private constant SOLD_OUT = "Sold out";
+    string private constant TOO_MANY = "Too many";
+
+    /// @notice Access control roles
+    bytes32 public immutable MINTER_ROLE = keccak256("MINTER");
+    bytes32 public immutable SALES_MANAGER_ROLE = keccak256("SALES_MANAGER");
+
+    /// @dev Returns the version of the contract.
+    function contractVersion() external pure returns (uint256) {
+        return VERSION;
+    }
+
+    /// @notice General configuration for NFT Minting and bookkeeping
+    struct Configuration {
+        /// @dev Metadata renderer
+        IMetadataRenderer metadataRenderer;
+        /// @dev Total size of edition that can be minted
+        uint64 editionSize;
+        /// @dev Royalty amount in bps
+        uint16 royaltyBPS;
+        /// @dev Funds recipient for sale
+        address payable fundsRecipient;
+    }
+
+    /// @notice Sales states and configuration
+    /// @dev Uses 3 storage slots
+    struct SalesConfiguration {
+        /// @dev Public sale price
+        uint104 publicSalePrice;
+        /// @dev Max purchase number per txn
+        uint32 maxSalePurchasePerAddress;
+        /// @dev uint64 type allows for dates into 292 billion years
+
+        // Storage: uses 1 slot
+
+        /// @dev Public sale start timestamp
+        uint64 publicSaleStart;
+        /// @dev Public sale end timestamp
+        uint64 publicSaleEnd;
+        /// @dev Presale start timestamp
+        uint64 presaleStart;
+        /// @dev Presale end timestamp
+        uint64 presaleEnd;
+        // Storage: uses 1 slot
+
+        /// @dev Presale merkle root
+        bytes32 presaleMerkleRoot;
+    }
+
+    /// @notice Configuration for NFT minting contract storage
+    Configuration public config;
+
+    /// @notice Sales configuration
+    SalesConfiguration public salesConfig;
+
+    /// @dev ZORA V3 transfer helper address for auto-approval
+    address private immutable zoraERC721TransferHelper;
+
+    /// @dev Mapping for presale mint counts by address to allow public mint limit
+    mapping(address => uint256) public presaleMintsByAddress;
+
+    /// @dev Zora Fee Manager address
+    IZoraFeeManager public immutable zoraFeeManager;
+
+    /// @notice Only allow for users with admin access
+    modifier onlyAdmin() {
+        require(hasRole(DEFAULT_ADMIN_ROLE, msg.sender), "Only admin allowed");
+
+        _;
+    }
+
+    /// @notice Allows user to mint tokens at a quantity
+    modifier canMintTokens(uint256 quantity) {
+        require(quantity + _totalMinted() <= config.editionSize, TOO_MANY);
+
+        _;
+    }
+
+    function _presaleActive() internal view returns (bool) {
+        return
+            salesConfig.presaleStart <= block.timestamp &&
+            salesConfig.presaleEnd > block.timestamp;
+    }
+
+    function _publicSaleActive() internal view returns (bool) {
+        return
+            salesConfig.publicSaleStart <= block.timestamp &&
+            salesConfig.publicSaleEnd > block.timestamp;
+    }
+
+    /// @notice Presale active
+    modifier onlyPresaleActive() {
+        require(_presaleActive(), "Presale inactive");
+
+        _;
+    }
+
+    /// @notice Public sale active
+    modifier onlyPublicSaleActive() {
+        require(_publicSaleActive(), "Sale inactive");
+
+        _;
+    }
+
+    /// @notice Getter for last minted token ID (gets next token id and subtracts 1)
+    function _lastMintedTokenId() internal view returns (uint256) {
+        return _currentIndex - 1;
+    }
+
+    /// @notice Start token ID for minting (1-100 vs 0-99)
+    function _startTokenId() internal pure override returns (uint256) {
+        return 1;
+    }
+
+    /// @notice Only a given role has access or admin
+    /// @param role role to check for alongside the admin role
+    modifier onlyRoleOrAdmin(bytes32 role) {
+        require(
+            hasRole(DEFAULT_ADMIN_ROLE, msg.sender) ||
+                hasRole(role, msg.sender),
+            "Does not have proper role or admin"
+        );
+
+        _;
+    }
+
+    /// @notice Global constructor – these variables will not change with further proxy deploys
+    /// @param _zoraFeeManager Zora Fee Manager
+    /// @param _zoraERC721TransferHelper Transfer helper
+    constructor(
+        IZoraFeeManager _zoraFeeManager,
+        address _zoraERC721TransferHelper
+    ) {
+        zoraFeeManager = _zoraFeeManager;
+        zoraERC721TransferHelper = _zoraERC721TransferHelper;
+    }
+
+    ///  @dev Function to create a new edition. Can only be called by the allowed creator
+    ///       Sets the only allowed minter to the address that creates/owns the edition.
+    ///       This can be re-assigned or updated later
+    ///  @param _owner User that owns and can mint the edition, gets royalty and sales payouts and can update the base url if needed.
+    ///  @param _fundsRecipient Wallet/user that receives funds from sale
+    ///  @param _editionSize Number of editions that can be minted in total. If 0, unlimited editions can be minted.
+    ///  @param _royaltyBPS BPS of the royalty set on the contract. Can be 0 for no royalty.
+    function initialize(
+        string memory _name,
+        string memory _symbol,
+        address _owner,
+        address payable _fundsRecipient,
+        uint64 _editionSize,
+        uint16 _royaltyBPS,
+        IMetadataRenderer _metadataRenderer,
+        bytes memory _metadataRendererInit
+    ) public initializer {
+        // Setup ERC721A
+        __ERC721A_init(_name, _symbol);
+        // Setup access control
+        __AccessControl_init();
+        // Setup re-entracy guard
+        __ReentrancyGuard_init();
+        // Setup the owner role
+        _setupRole(DEFAULT_ADMIN_ROLE, _owner);
+        // Set ownership to original sender of contract call
+        _setOwner(_owner);
+
+        require(
+            config.royaltyBPS < 50_01,
+            "Royalty BPS cannot be greater than 50%"
+        );
+
+        config.editionSize = _editionSize;
+        config.metadataRenderer = _metadataRenderer;
+        config.royaltyBPS = _royaltyBPS;
+        config.fundsRecipient = _fundsRecipient;
+        _metadataRenderer.initializeWithData(_metadataRendererInit);
+    }
+
+    /// @dev Getter for admin role associated with the contract to handle metadata
+    /// @return boolean if address is admin
+    function isAdmin(address user) external view returns (bool) {
+        return hasRole(DEFAULT_ADMIN_ROLE, user);
+    }
+
+    /// @param tokenId Token ID to burn
+    /// @notice User burn function for token id
+    function burn(uint256 tokenId) public {
+        _burn(tokenId, true);
+    }
+
+    /// @dev Get royalty information for token
+    /// @param _salePrice Sale price for the token
+    function royaltyInfo(uint256, uint256 _salePrice)
+        external
+        view
+        override
+        returns (address receiver, uint256 royaltyAmount)
+    {
+        if (config.fundsRecipient == address(0x0)) {
+            return (config.fundsRecipient, 0);
+        }
+        return (
+            config.fundsRecipient,
+            (_salePrice * config.royaltyBPS) / 10_000
+        );
+    }
+
+    /// @notice Sale details
+    /// @return IZoraDrop.SaleDetails sale information details
+    function saleDetails()
+        external
+        view
+        returns (IZoraDrop.SaleDetails memory)
+    {
+        return
+            IZoraDrop.SaleDetails({
+                publicSaleActive: _publicSaleActive(),
+                presaleActive: _presaleActive(),
+                presaleStart: salesConfig.presaleStart,
+                presaleEnd: salesConfig.presaleEnd,
+                publicSaleStart: salesConfig.publicSaleStart,
+                publicSaleEnd: salesConfig.publicSaleEnd,
+                presaleMerkleRoot: salesConfig.presaleMerkleRoot,
+                publicSalePrice: salesConfig.publicSalePrice,
+                totalMinted: _totalMinted(),
+                maxSupply: config.editionSize,
+                maxSalePurchasePerAddress: salesConfig.maxSalePurchasePerAddress
+            });
+    }
+
+    /// @dev Number of NFTs the user has minted per address
+    /// @param minter to get counts for
+    function mintedPerAddress(address minter)
+        external
+        view
+        override
+        returns (IZoraDrop.AddressMintDetails memory)
+    {
+        return
+            IZoraDrop.AddressMintDetails({
+                presaleMints: presaleMintsByAddress[minter],
+                publicMints: _numberMinted(minter) -
+                    presaleMintsByAddress[minter],
+                totalMints: _numberMinted(minter)
+            });
+    }
+
+    /// @dev Setup auto-approval for Zora v3 access to sell NFT
+    ///      Still requires approval for module
+    /// @param nftOwner owner of the nft
+    /// @param operator operator wishing to transfer/burn/etc the NFTs
+    function isApprovedForAll(address nftOwner, address operator)
+        public
+        view
+        override(ERC721AUpgradeable)
+        returns (bool)
+    {
+        if (operator == zoraERC721TransferHelper) {
+            return true;
+        }
+        return super.isApprovedForAll(nftOwner, operator);
+    }
+
+    /// @dev Gets the zora fee for amount of withdraw
+    /// @param amount amount of funds to get fee for
+    function zoraFeeForAmount(uint256 amount)
+        public
+        returns (address payable, uint256)
+    {
+        (address payable recipient, uint256 bps) = zoraFeeManager
+            .getZORAWithdrawFeesBPS(address(this));
+        return (recipient, (amount * bps) / 10_000);
+    }
+
+    /**
+     *** ---------------------------------- ***
+     ***                                    ***
+     ***     PUBLIC MINTING FUNCTIONS       ***
+     ***                                    ***
+     *** ---------------------------------- ***
+     ***
+     ***/
+
+    /**
+      @dev This allows the user to purchase a edition edition
+           at the given price in the contract.
+     */
+    function purchase(uint256 quantity)
+        external
+        payable
+        nonReentrant
+        canMintTokens(quantity)
+        onlyPublicSaleActive
+        returns (uint256)
+    {
+        uint256 salePrice = salesConfig.publicSalePrice;
+
+        require(msg.value == salePrice * quantity, "Wrong price");
+        require(
+            _numberMinted(_msgSender()) +
+                quantity -
+                presaleMintsByAddress[_msgSender()] <=
+                salesConfig.maxSalePurchasePerAddress,
+            TOO_MANY
+        );
+
+        _mintNFTs(_msgSender(), quantity);
+        uint256 firstMintedTokenId = _lastMintedTokenId() - quantity;
+
+        emit IZoraDrop.Sale({
+            to: _msgSender(),
+            quantity: quantity,
+            pricePerToken: salePrice,
+            firstPurchasedTokenId: firstMintedTokenId
+        });
+        return firstMintedTokenId;
+    }
+
+    /// @notice Function to mint NFTs
+    /// @dev (important: Does not enforce max supply limit, enforce that limit earlier)
+    /// @dev This batches in size of 8 as per recommended by ERC721A creators
+    /// @param to address to mint NFTs to
+    /// @param quantity number of NFTs to mint
+    function _mintNFTs(address to, uint256 quantity) internal {
+        do {
+            uint256 toMint = quantity > MAX_MINT_BATCH_SIZE
+                ? MAX_MINT_BATCH_SIZE
+                : quantity;
+            _mint({to: to, quantity: toMint, _data: "", safe: false});
+            quantity -= toMint;
+        } while (quantity > 0);
+    }
+
+    /// @notice Merkle-tree based presale purchase function
+    /// @param quantity quantity to purchase
+    /// @param maxQuantity max quantity that can be purchased via merkle proof #
+    /// @param pricePerToken price that each token is purchased at
+    /// @param merkleProof proof for presale mint
+    function purchasePresale(
+        uint256 quantity,
+        uint256 maxQuantity,
+        uint256 pricePerToken,
+        bytes32[] calldata merkleProof
+    )
+        external
+        payable
+        nonReentrant
+        canMintTokens(quantity)
+        onlyPresaleActive
+        returns (uint256)
+    {
+        require(
+            MerkleProofUpgradeable.verify(
+                merkleProof,
+                salesConfig.presaleMerkleRoot,
+                keccak256(
+                    // address, uint256, uint256
+                    abi.encode(msg.sender, maxQuantity, pricePerToken)
+                )
+            ),
+            "Needs to be approved"
+        );
+        require(msg.value == pricePerToken * quantity, "Wrong price");
+
+        presaleMintsByAddress[_msgSender()] += quantity;
+        require(presaleMintsByAddress[_msgSender()] <= maxQuantity, TOO_MANY);
+
+        _mintNFTs(_msgSender(), quantity);
+        uint256 firstMintedTokenId = _lastMintedTokenId() - quantity;
+
+        emit IZoraDrop.Sale({
+            to: _msgSender(),
+            quantity: quantity,
+            pricePerToken: pricePerToken,
+            firstPurchasedTokenId: firstMintedTokenId
+        });
+
+        return firstMintedTokenId;
+    }
+
+    /**
+     *** ---------------------------------- ***
+     ***                                    ***
+     ***     ADMIN MINTING FUNCTIONS        ***
+     ***                                    ***
+     *** ---------------------------------- ***
+     ***
+     ***/
+
+    /// @notice Mint admin
+    /// @param recipient recipient to mint to
+    /// @param quantity quantity to mint
+    function adminMint(address recipient, uint256 quantity)
+        external
+        onlyRoleOrAdmin(MINTER_ROLE)
+        canMintTokens(quantity)
+        returns (uint256)
+    {
+        _mintNFTs(recipient, quantity);
+
+        return _lastMintedTokenId();
+    }
+
+    /// @dev This mints multiple editions to the given list of addresses.
+    /// @param recipients list of addresses to send the newly minted editions to
+    function adminMintAirdrop(address[] calldata recipients)
+        external
+        override
+        onlyRoleOrAdmin(MINTER_ROLE)
+        canMintTokens(recipients.length)
+        returns (uint256)
+    {
+        uint256 atId = _currentIndex;
+        uint256 startAt = atId;
+
+        unchecked {
+            for (
+                uint256 endAt = atId + recipients.length;
+                atId < endAt;
+                atId++
+            ) {
+                _mintNFTs(recipients[atId - startAt], 1);
+            }
+        }
+        return _lastMintedTokenId();
+    }
+
+    /**
+     *** ---------------------------------- ***
+     ***                                    ***
+     ***  ADMIN CONFIGURATION FUNCTIONS     ***
+     ***                                    ***
+     *** ---------------------------------- ***
+     ***
+     ***/
+
+    /// @dev Set new owner for royalties / opensea
+    /// @param newOwner new owner to set
+    function setOwner(address newOwner) public onlyAdmin {
+        _setOwner(newOwner);
+    }
+
+    /// @dev This sets the sales configuration
+    /// @param newConfig new configuration to set for sales information
+    function setDropSaleConfiguration(SalesConfiguration memory newConfig)
+        external
+        onlyAdmin
+    {
+        salesConfig = newConfig;
+        emit SalesConfigChanged(_msgSender(), salesConfig);
+    }
+
+    /// @dev Set a different funds recipient
+    /// @param newRecipientAddress new funds recipient address
+    function setFundsRecipient(address payable newRecipientAddress)
+        external
+        onlyRoleOrAdmin(SALES_MANAGER_ROLE)
+    {
+        config.fundsRecipient = newRecipientAddress;
+        emit FundsRecipientChanged(newRecipientAddress, _msgSender());
+    }
+
+    /// @dev This withdraws ETH from the contract to the contract owner.
+    function withdraw() external nonReentrant {
+        address sender = _msgSender();
+
+        uint256 funds = address(this).balance;
+        (address payable feeRecipient, uint256 zoraFee) = zoraFeeForAmount(
+            funds
+        );
+
+        require(
+            hasRole(DEFAULT_ADMIN_ROLE, sender) ||
+                hasRole(SALES_MANAGER_ROLE, sender) ||
+                sender == feeRecipient ||
+                sender == config.fundsRecipient,
+            "Does not have proper role to withdraw"
+        );
+
+        // No need for gas limit to trusted address.
+        if (zoraFee > 0) {
+            feeRecipient.sendValue(zoraFee);
+            funds -= zoraFee;
+        }
+        // No need for gas limit to trusted address.
+        config.fundsRecipient.sendValue(funds);
+    }
+
+    /// @notice Admin function to finalize and open edition sale
+    function finalizeOpenEdition()
+        external
+        onlyRoleOrAdmin(SALES_MANAGER_ROLE)
+    {
+        require(config.editionSize == type(uint64).max, "Not open edition");
+        config.editionSize = uint64(_totalMinted());
+        emit OpenMintFinalized(_msgSender(), config.editionSize);
+    }
+
+    /**
+     *** ---------------------------------- ***
+     ***                                    ***
+     ***      GENERAL GETTER FUNCTIONS      ***
+     ***                                    ***
+     *** ---------------------------------- ***
+     ***
+     ***/
+
+    /// @notice Simple override for owner interface.
+    /// @return user owner address
+    function owner()
+        public
+        view
+        override(OwnableSkeleton, IZoraDrop)
+        returns (address)
+    {
+        return super.owner();
+    }
+
+    /// @notice Contract URI Getter, proxies to metadataRenderer
+    /// @return Contract URI
+    function contractURI() external view returns (string memory) {
+        return config.metadataRenderer.contractURI();
+    }
+
+    /// @notice Getter for metadataRenderer contract
+    function metadataRenderer() external view returns (IMetadataRenderer) {
+        return IMetadataRenderer(config.metadataRenderer);
+    }
+
+    /// @notice Token URI Getter, proxies to metadataRenderer
+    /// @param tokenId id of token to get URI for
+    /// @return Token URI
+    function tokenURI(uint256 tokenId)
+        public
+        view
+        override
+        returns (string memory)
+    {
+        return config.metadataRenderer.tokenURI(tokenId);
+    }
+
+    /// @notice ERC165 supports interface
+    /// @param interfaceId interface id to check if supported
+    function supportsInterface(bytes4 interfaceId)
+        public
+        view
+        override(
+            IERC165Upgradeable,
+            ERC721AUpgradeable,
+            AccessControlUpgradeable
+        )
+        returns (bool)
+    {
+        return
+            super.supportsInterface(interfaceId) ||
+            type(IOwnable).interfaceId == interfaceId ||
+            type(IERC2981Upgradeable).interfaceId == interfaceId ||
+            type(IZoraDrop).interfaceId == interfaceId;
+    }
+}
+
+

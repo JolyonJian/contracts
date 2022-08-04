@@ -1,25 +1,138 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "contracts/ProxyFactory.sol": {
-      "content": "// SPDX-License-Identifier: MIT\npragma solidity 0.6.11;\n\ncontract ProxyFactory {\n    /// @dev See comment below for explanation of the proxy INIT_CODE\n    bytes private constant INIT_CODE =\n        hex'604080600a3d393df3fe'\n        hex'7300000000000000000000000000000000000000003d36602557'\n        hex'3d3d3d3d34865af1603156'\n        hex'5b363d3d373d3d363d855af4'\n        hex'5b3d82803e603c573d81fd5b3d81f3';\n    /// @dev The main address that the deployed proxies will forward to.\n    address payable public immutable mainAddress;\n\n    constructor(address payable addr) public {\n        require(addr != address(0), '0x0 is an invalid address');\n        mainAddress = addr;\n    }\n\n    /**\n     * @dev This deploys an extremely minimalist proxy contract with the\n     * mainAddress embedded within.\n     * Note: The bytecode is explained in comments below this contract.\n     * @return dst The new contract address.\n     */\n    function deployNewInstance(bytes32 salt) external returns (address dst) {\n        // copy init code into memory\n        // and immutable ExchangeDeposit address onto stack\n        bytes memory initCodeMem = INIT_CODE;\n        address payable addrStack = mainAddress;\n        assembly {\n            // Get the position of the start of init code\n            let pos := add(initCodeMem, 0x20)\n            // grab the first 32 bytes\n            let first32 := mload(pos)\n            // shift the address bytes 8 bits left\n            let addrBytesShifted := shl(8, addrStack)\n            // bitwise OR them and add the address into the init code memory\n            mstore(pos, or(first32, addrBytesShifted))\n            // create the contract\n            dst := create2(\n                0, // Send no value to the contract\n                pos, // Deploy code starts at pos\n                74, // Deploy + runtime code is 74 bytes\n                salt // 32 byte salt\n            )\n            // revert if failed\n            if eq(dst, 0) {\n                revert(0, 0)\n            }\n        }\n    }\n}\n\n/*\n    // PROXY CONTRACT EXPLANATION\n\n    // DEPLOY CODE (will not be returned by web3.eth.getCode())\n    // STORE CONTRACT CODE IN MEMORY, THEN RETURN IT\n    POS | OPCODE |  OPCODE TEXT      |  STACK                               |\n    00  |  6040  |  PUSH1 0x40       |  0x40                                |\n    02  |  80    |  DUP1             |  0x40 0x40                           |\n    03  |  600a  |  PUSH1 0x0a       |  0x0a 0x40 0x40                      |\n    05  |  3d    |  RETURNDATASIZE   |  0x0 0x0a 0x40 0x40                  |\n    06  |  39    |  CODECOPY         |  0x40                                |\n    07  |  3d    |  RETURNDATASIZE   |  0x0 0x40                            |\n    08  |  f3    |  RETURN           |                                      |\n\n    09  |  fe    |  INVALID          |                                      |\n\n    // START CONTRACT CODE\n\n    // Push the ExchangeDeposit address on the stack for DUPing later\n    // Also pushing a 0x0 for DUPing later. (saves runtime AND deploy gas)\n    // Then use the calldata size as the decider for whether to jump or not\n    POS | OPCODE |  OPCODE TEXT      |  STACK                               |\n    00  |  73... |  PUSH20 ...       |  {ADDR}                              |\n    15  |  3d    |  RETURNDATASIZE   |  0x0 {ADDR}                          |\n    16  |  36    |  CALLDATASIZE     |  CDS 0x0 {ADDR}                      |\n    17  |  6025  |  PUSH1 0x25       |  0x25 CDS 0x0 {ADDR}                 |\n    19  |  57    |  JUMPI            |  0x0 {ADDR}                          |\n\n    // If msg.data length === 0, CALL into address\n    // This way, the proxy contract address becomes msg.sender and we can use\n    // msg.sender in the Deposit Event\n    // This also gives us access to our ExchangeDeposit storage (for forwarding address)\n    POS | OPCODE |  OPCODE TEXT      |  STACK                                       |\n    1A  |  3d    |  RETURNDATASIZE   |  0x0 0x0 {ADDR}                              |\n    1B  |  3d    |  RETURNDATASIZE   |  0x0 0x0 0x0 {ADDR}                          |\n    1C  |  3d    |  RETURNDATASIZE   |  0x0 0x0 0x0 0x0 {ADDR}                      |\n    1D  |  3d    |  RETURNDATASIZE   |  0x0 0x0 0x0 0x0 0x0 {ADDR}                  |\n    1E  |  34    |  CALLVALUE        |  VALUE 0x0 0x0 0x0 0x0 0x0 {ADDR}            |\n    1F  |  86    |  DUP7             |  {ADDR} VALUE 0x0 0x0 0x0 0x0 0x0 {ADDR}     |\n    20  |  5a    |  GAS              |  GAS {ADDR} VALUE 0x0 0x0 0x0 0x0 0x0 {ADDR} |\n    21  |  f1    |  CALL             |  {RES} 0x0 {ADDR}                            |\n    22  |  6031  |  PUSH1 0x31       |  0x31 {RES} 0x0 {ADDR}                       |\n    24  |  56    |  JUMP             |  {RES} 0x0 {ADDR}                            |\n\n    // If msg.data length > 0, DELEGATECALL into address\n    // This will allow us to call gatherErc20 using the context of the proxy\n    // address itself.\n    POS | OPCODE |  OPCODE TEXT      |  STACK                                 |\n    25  |  5b    |  JUMPDEST         |  0x0 {ADDR}                            |\n    26  |  36    |  CALLDATASIZE     |  CDS 0x0 {ADDR}                        |\n    27  |  3d    |  RETURNDATASIZE   |  0x0 CDS 0x0 {ADDR}                    |\n    28  |  3d    |  RETURNDATASIZE   |  0x0 0x0 CDS 0x0 {ADDR}                |\n    29  |  37    |  CALLDATACOPY     |  0x0 {ADDR}                            |\n    2A  |  3d    |  RETURNDATASIZE   |  0x0 0x0 {ADDR}                        |\n    2B  |  3d    |  RETURNDATASIZE   |  0x0 0x0 0x0 {ADDR}                    |\n    2C  |  36    |  CALLDATASIZE     |  CDS 0x0 0x0 0x0 {ADDR}                |\n    2D  |  3d    |  RETURNDATASIZE   |  0x0 CDS 0x0 0x0 0x0 {ADDR}            |\n    2E  |  85    |  DUP6             |  {ADDR} 0x0 CDS 0x0 0x0 0x0 {ADDR}     |\n    2F  |  5a    |  GAS              |  GAS {ADDR} 0x0 CDS 0x0 0x0 0x0 {ADDR} |\n    30  |  f4    |  DELEGATECALL     |  {RES} 0x0 {ADDR}                      |\n\n    // We take the result of the call, load in the returndata,\n    // If call result == 0, failure, revert\n    // else success, return\n    POS | OPCODE |  OPCODE TEXT      |  STACK                               |\n    31  |  5b    |  JUMPDEST         |  {RES} 0x0 {ADDR}                    |\n    32  |  3d    |  RETURNDATASIZE   |  RDS {RES} 0x0 {ADDR}                |\n    33  |  82    |  DUP3             |  0x0 RDS {RES} 0x0 {ADDR}            |\n    34  |  80    |  DUP1             |  0x0 0x0 RDS {RES} 0x0 {ADDR}        |\n    35  |  3e    |  RETURNDATACOPY   |  {RES} 0x0 {ADDR}                    |\n    36  |  603c  |  PUSH1 0x3c       |  0x3c {RES} 0x0 {ADDR}               |\n    38  |  57    |  JUMPI            |  0x0 {ADDR}                          |\n    39  |  3d    |  RETURNDATASIZE   |  RDS 0x0 {ADDR}                      |\n    3A  |  81    |  DUP2             |  0x0 RDS 0x0 {ADDR}                  |\n    3B  |  fd    |  REVERT           |  0x0 {ADDR}                          |\n    3C  |  5b    |  JUMPDEST         |  0x0 {ADDR}                          |\n    3D  |  3d    |  RETURNDATASIZE   |  RDS 0x0 {ADDR}                      |\n    3E  |  81    |  DUP2             |  0x0 RDS 0x0 {ADDR}                  |\n    3F  |  f3    |  RETURN           |  0x0 {ADDR}                          |\n*/\n"
-    }
-  },
-  "settings": {
-    "optimizer": {
-      "enabled": true,
-      "runs": 200
-    },
-    "evmVersion": "istanbul",
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "abi"
-        ]
-      }
-    },
-    "libraries": {}
-  }
-}}
+// contracts/ProxyFactory.sol
+
+// SPDX-License-Identifier: MIT
+pragma solidity 0.6.11;
+
+contract ProxyFactory {
+    /// @dev See comment below for explanation of the proxy INIT_CODE
+    bytes private constant INIT_CODE =
+        hex'604080600a3d393df3fe'
+        hex'7300000000000000000000000000000000000000003d36602557'
+        hex'3d3d3d3d34865af1603156'
+        hex'5b363d3d373d3d363d855af4'
+        hex'5b3d82803e603c573d81fd5b3d81f3';
+    /// @dev The main address that the deployed proxies will forward to.
+    address payable public immutable mainAddress;
+
+    constructor(address payable addr) public {
+        require(addr != address(0), '0x0 is an invalid address');
+        mainAddress = addr;
+    }
+
+    /**
+     * @dev This deploys an extremely minimalist proxy contract with the
+     * mainAddress embedded within.
+     * Note: The bytecode is explained in comments below this contract.
+     * @return dst The new contract address.
+     */
+    function deployNewInstance(bytes32 salt) external returns (address dst) {
+        // copy init code into memory
+        // and immutable ExchangeDeposit address onto stack
+        bytes memory initCodeMem = INIT_CODE;
+        address payable addrStack = mainAddress;
+        assembly {
+            // Get the position of the start of init code
+            let pos := add(initCodeMem, 0x20)
+            // grab the first 32 bytes
+            let first32 := mload(pos)
+            // shift the address bytes 8 bits left
+            let addrBytesShifted := shl(8, addrStack)
+            // bitwise OR them and add the address into the init code memory
+            mstore(pos, or(first32, addrBytesShifted))
+            // create the contract
+            dst := create2(
+                0, // Send no value to the contract
+                pos, // Deploy code starts at pos
+                74, // Deploy + runtime code is 74 bytes
+                salt // 32 byte salt
+            )
+            // revert if failed
+            if eq(dst, 0) {
+                revert(0, 0)
+            }
+        }
+    }
+}
+
+/*
+    // PROXY CONTRACT EXPLANATION
+
+    // DEPLOY CODE (will not be returned by web3.eth.getCode())
+    // STORE CONTRACT CODE IN MEMORY, THEN RETURN IT
+    POS | OPCODE |  OPCODE TEXT      |  STACK                               |
+    00  |  6040  |  PUSH1 0x40       |  0x40                                |
+    02  |  80    |  DUP1             |  0x40 0x40                           |
+    03  |  600a  |  PUSH1 0x0a       |  0x0a 0x40 0x40                      |
+    05  |  3d    |  RETURNDATASIZE   |  0x0 0x0a 0x40 0x40                  |
+    06  |  39    |  CODECOPY         |  0x40                                |
+    07  |  3d    |  RETURNDATASIZE   |  0x0 0x40                            |
+    08  |  f3    |  RETURN           |                                      |
+
+    09  |  fe    |  INVALID          |                                      |
+
+    // START CONTRACT CODE
+
+    // Push the ExchangeDeposit address on the stack for DUPing later
+    // Also pushing a 0x0 for DUPing later. (saves runtime AND deploy gas)
+    // Then use the calldata size as the decider for whether to jump or not
+    POS | OPCODE |  OPCODE TEXT      |  STACK                               |
+    00  |  73... |  PUSH20 ...       |  {ADDR}                              |
+    15  |  3d    |  RETURNDATASIZE   |  0x0 {ADDR}                          |
+    16  |  36    |  CALLDATASIZE     |  CDS 0x0 {ADDR}                      |
+    17  |  6025  |  PUSH1 0x25       |  0x25 CDS 0x0 {ADDR}                 |
+    19  |  57    |  JUMPI            |  0x0 {ADDR}                          |
+
+    // If msg.data length === 0, CALL into address
+    // This way, the proxy contract address becomes msg.sender and we can use
+    // msg.sender in the Deposit Event
+    // This also gives us access to our ExchangeDeposit storage (for forwarding address)
+    POS | OPCODE |  OPCODE TEXT      |  STACK                                       |
+    1A  |  3d    |  RETURNDATASIZE   |  0x0 0x0 {ADDR}                              |
+    1B  |  3d    |  RETURNDATASIZE   |  0x0 0x0 0x0 {ADDR}                          |
+    1C  |  3d    |  RETURNDATASIZE   |  0x0 0x0 0x0 0x0 {ADDR}                      |
+    1D  |  3d    |  RETURNDATASIZE   |  0x0 0x0 0x0 0x0 0x0 {ADDR}                  |
+    1E  |  34    |  CALLVALUE        |  VALUE 0x0 0x0 0x0 0x0 0x0 {ADDR}            |
+    1F  |  86    |  DUP7             |  {ADDR} VALUE 0x0 0x0 0x0 0x0 0x0 {ADDR}     |
+    20  |  5a    |  GAS              |  GAS {ADDR} VALUE 0x0 0x0 0x0 0x0 0x0 {ADDR} |
+    21  |  f1    |  CALL             |  {RES} 0x0 {ADDR}                            |
+    22  |  6031  |  PUSH1 0x31       |  0x31 {RES} 0x0 {ADDR}                       |
+    24  |  56    |  JUMP             |  {RES} 0x0 {ADDR}                            |
+
+    // If msg.data length > 0, DELEGATECALL into address
+    // This will allow us to call gatherErc20 using the context of the proxy
+    // address itself.
+    POS | OPCODE |  OPCODE TEXT      |  STACK                                 |
+    25  |  5b    |  JUMPDEST         |  0x0 {ADDR}                            |
+    26  |  36    |  CALLDATASIZE     |  CDS 0x0 {ADDR}                        |
+    27  |  3d    |  RETURNDATASIZE   |  0x0 CDS 0x0 {ADDR}                    |
+    28  |  3d    |  RETURNDATASIZE   |  0x0 0x0 CDS 0x0 {ADDR}                |
+    29  |  37    |  CALLDATACOPY     |  0x0 {ADDR}                            |
+    2A  |  3d    |  RETURNDATASIZE   |  0x0 0x0 {ADDR}                        |
+    2B  |  3d    |  RETURNDATASIZE   |  0x0 0x0 0x0 {ADDR}                    |
+    2C  |  36    |  CALLDATASIZE     |  CDS 0x0 0x0 0x0 {ADDR}                |
+    2D  |  3d    |  RETURNDATASIZE   |  0x0 CDS 0x0 0x0 0x0 {ADDR}            |
+    2E  |  85    |  DUP6             |  {ADDR} 0x0 CDS 0x0 0x0 0x0 {ADDR}     |
+    2F  |  5a    |  GAS              |  GAS {ADDR} 0x0 CDS 0x0 0x0 0x0 {ADDR} |
+    30  |  f4    |  DELEGATECALL     |  {RES} 0x0 {ADDR}                      |
+
+    // We take the result of the call, load in the returndata,
+    // If call result == 0, failure, revert
+    // else success, return
+    POS | OPCODE |  OPCODE TEXT      |  STACK                               |
+    31  |  5b    |  JUMPDEST         |  {RES} 0x0 {ADDR}                    |
+    32  |  3d    |  RETURNDATASIZE   |  RDS {RES} 0x0 {ADDR}                |
+    33  |  82    |  DUP3             |  0x0 RDS {RES} 0x0 {ADDR}            |
+    34  |  80    |  DUP1             |  0x0 0x0 RDS {RES} 0x0 {ADDR}        |
+    35  |  3e    |  RETURNDATACOPY   |  {RES} 0x0 {ADDR}                    |
+    36  |  603c  |  PUSH1 0x3c       |  0x3c {RES} 0x0 {ADDR}               |
+    38  |  57    |  JUMPI            |  0x0 {ADDR}                          |
+    39  |  3d    |  RETURNDATASIZE   |  RDS 0x0 {ADDR}                      |
+    3A  |  81    |  DUP2             |  0x0 RDS 0x0 {ADDR}                  |
+    3B  |  fd    |  REVERT           |  0x0 {ADDR}                          |
+    3C  |  5b    |  JUMPDEST         |  0x0 {ADDR}                          |
+    3D  |  3d    |  RETURNDATASIZE   |  RDS 0x0 {ADDR}                      |
+    3E  |  81    |  DUP2             |  0x0 RDS 0x0 {ADDR}                  |
+    3F  |  f3    |  RETURN           |  0x0 {ADDR}                          |
+*/
+
+

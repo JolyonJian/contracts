@@ -1,45 +1,365 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "contracts/MistXRouter.sol": {
-      "content": "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.4;\n\nimport './interfaces/IERC20.sol';\nimport './interfaces/IUniswap.sol';\nimport './interfaces/IWETH.sol';\nimport './libraries/SafeERC20.sol';\nimport './libraries/TransferHelper.sol';\n\n/// @author Nathan Worsley (https://github.com/CodeForcer)\n/// @title MistX Router with generic Uniswap-style support\n/// @notice If you came here just to copy my stuff, you NGMI - learn to code!\ncontract MistXRouter {\n  /***********************\n  + Global Settings      +\n  ***********************/\n\n  using SafeERC20 for IERC20;\n\n  // The percentage we tip to the miners\n  uint256 public bribePercent;\n\n  // Owner of the contract and reciever of tips\n  address public owner;\n\n  // Managers are permissioned for critical functionality\n  mapping (address => bool) public managers;\n\n  address public immutable WETH;\n  address public immutable factory;\n  bytes32 public immutable initHash;\n\n  receive() external payable {}\n  fallback() external payable {}\n\n  constructor(\n    address _WETH,\n    address _factory,\n    bytes32 _initHash\n  ) {\n    WETH = _WETH;\n    factory = _factory;\n    bribePercent = 99;\n    initHash = _initHash;\n\n    owner = msg.sender;\n    managers[msg.sender] = true;\n  }\n\n  /***********************\n  + Structures           +\n  ***********************/\n\n  struct Swap {\n    uint256 amount0;\n    uint256 amount1;\n    address[] path;\n    address to;\n    uint256 deadline;\n  }\n\n  /***********************\n  + Swap wrappers        +\n  ***********************/\n\n  function swapExactETHForTokens(\n    Swap calldata _swap,\n    uint256 _bribe\n  ) external payable {\n    deposit(_bribe);\n\n    require(_swap.path[0] == WETH, 'MistXRouter: INVALID_PATH');\n    uint amountIn = msg.value - _bribe;\n    IWETH(WETH).deposit{value: amountIn}();\n    assert(IWETH(WETH).transfer(pairFor(_swap.path[0], _swap.path[1]), amountIn));\n    uint balanceBefore = IERC20(_swap.path[_swap.path.length - 1]).balanceOf(_swap.to);\n    _swapSupportingFeeOnTransferTokens(_swap.path, _swap.to);\n    require(\n      IERC20(_swap.path[_swap.path.length - 1]).balanceOf(_swap.to) - balanceBefore >= _swap.amount1,\n      'MistXRouter: INSUFFICIENT_OUTPUT_AMOUNT'\n    );\n  }\n\n  function swapETHForExactTokens(\n    Swap calldata _swap,\n    uint256 _bribe\n  ) external payable {\n    deposit(_bribe);\n\n    require(_swap.path[0] == WETH, 'UniswapV2Router: INVALID_PATH');\n    uint[] memory amounts = getAmountsIn(_swap.amount1, _swap.path);\n    require(amounts[0] <= msg.value - _bribe, 'UniswapV2Router: EXCESSIVE_INPUT_AMOUNT');\n    IWETH(WETH).deposit{value: amounts[0]}();\n    assert(IWETH(WETH).transfer(pairFor(_swap.path[0], _swap.path[1]), amounts[0]));\n    _swapPath(amounts, _swap.path, _swap.to);\n\n    // refund dust eth, if any\n    if (msg.value - _bribe > amounts[0]) {\n      (bool success, ) = msg.sender.call{value: msg.value - _bribe - amounts[0]}(new bytes(0));\n      require(success, 'safeTransferETH: ETH transfer failed');\n    }\n  }\n\n  function swapExactTokensForTokens(\n    Swap calldata _swap,\n    uint256 _bribe\n  ) external payable {\n    deposit(_bribe);\n\n    TransferHelper.safeTransferFrom(\n      _swap.path[0], msg.sender, pairFor(_swap.path[0], _swap.path[1]), _swap.amount0\n    );\n    uint balanceBefore = IERC20(_swap.path[_swap.path.length - 1]).balanceOf(_swap.to);\n    _swapSupportingFeeOnTransferTokens(_swap.path, _swap.to);\n    require(\n      IERC20(_swap.path[_swap.path.length - 1]).balanceOf(_swap.to) - balanceBefore >= _swap.amount1,\n      'MistXRouter: INSUFFICIENT_OUTPUT_AMOUNT'\n    );\n  }\n\n  function swapTokensForExactTokens(\n    Swap calldata _swap,\n    uint256 _bribe\n  ) external payable {\n    deposit(_bribe);\n\n    uint[] memory amounts = getAmountsIn(_swap.amount0, _swap.path);\n    require(amounts[0] <= _swap.amount1, 'MistXRouter: EXCESSIVE_INPUT_AMOUNT');\n    TransferHelper.safeTransferFrom(\n      _swap.path[0], msg.sender, pairFor(_swap.path[0], _swap.path[1]), amounts[0]\n    );\n    _swapPath(amounts, _swap.path, _swap.to);\n  }\n\n  function swapTokensForExactETH(\n    Swap calldata _swap,\n    uint256 _bribe\n  ) external payable {\n    require(_swap.path[_swap.path.length - 1] == WETH, 'MistXRouter: INVALID_PATH');\n    uint[] memory amounts = getAmountsIn(_swap.amount0, _swap.path);\n    require(amounts[0] <= _swap.amount1, 'MistXRouter: EXCESSIVE_INPUT_AMOUNT');\n    TransferHelper.safeTransferFrom(\n        _swap.path[0], msg.sender, pairFor(_swap.path[0], _swap.path[1]), amounts[0]\n    );\n    _swapPath(amounts, _swap.path, address(this));\n    IWETH(WETH).withdraw(amounts[amounts.length - 1]);\n    \n    deposit(_bribe);\n  \n    // ETH after bribe must be swept to _to\n    TransferHelper.safeTransferETH(_swap.to, amounts[amounts.length - 1]);\n  }\n\n  function swapExactTokensForETH(\n    Swap calldata _swap,\n    uint256 _bribe\n  ) external payable {\n    require(_swap.path[_swap.path.length - 1] == WETH, 'MistXRouter: INVALID_PATH');\n    TransferHelper.safeTransferFrom(\n      _swap.path[0], msg.sender, pairFor(_swap.path[0], _swap.path[1]), _swap.amount0\n    );\n    _swapSupportingFeeOnTransferTokens(_swap.path, address(this));\n    uint amountOut = IERC20(WETH).balanceOf(address(this));\n    require(amountOut >= _swap.amount1, 'MistXRouter: INSUFFICIENT_OUTPUT_AMOUNT');\n    IWETH(WETH).withdraw(amountOut);\n\n    deposit(_bribe);\n  \n    // ETH after bribe must be swept to _to\n    TransferHelper.safeTransferETH(_swap.to, amountOut - _bribe);\n  }\n\n  /***********************\n  + Library              +\n  ***********************/\n\n  // calculates the CREATE2 address for a pair without making any external calls\n  function pairFor(address tokenA, address tokenB) internal view returns (address pair) {\n    (address token0, address token1) = sortTokens(tokenA, tokenB);\n    uint hashed = uint(keccak256(abi.encodePacked(\n      hex'ff',\n      factory,\n      keccak256(abi.encodePacked(token0, token1)),\n      initHash // init code hash\n    )));\n    pair = address(uint160(hashed));\n  }\n\n  function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {\n    require(tokenA != tokenB, 'MistXLibrary: IDENTICAL_ADDRESSES');\n    (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);\n    require(token0 != address(0), 'MistXLibrary: ZERO_ADDRESS');\n  }\n\n  // fetches and sorts the reserves for a pair\n  function getReserves(address tokenA, address tokenB) internal view returns (uint reserveA, uint reserveB) {\n    (address token0,) = sortTokens(tokenA, tokenB);\n    (uint reserve0, uint reserve1,) = IUniswapV2Pair(pairFor(tokenA, tokenB)).getReserves();\n    (reserveA, reserveB) = tokenA == token0 ? (reserve0, reserve1) : (reserve1, reserve0);\n  }\n\n  // given some amount of an asset and pair reserves, returns an equivalent amount of the other asset\n  function quote(uint amountA, uint reserveA, uint reserveB) internal pure returns (uint amountB) {\n    require(amountA > 0, 'MistXLibrary: INSUFFICIENT_AMOUNT');\n    require(reserveA > 0 && reserveB > 0, 'MistXLibrary: INSUFFICIENT_LIQUIDITY');\n    amountB = amountA * (reserveB) / reserveA;\n  }\n\n  // given an input amount of an asset and pair reserves, returns the maximum output amount of the other asset\n  function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) internal pure returns (uint amountOut) {\n    require(amountIn > 0, 'MistXLibrary: INSUFFICIENT_INPUT_AMOUNT');\n    require(reserveIn > 0 && reserveOut > 0, 'MistXLibrary: INSUFFICIENT_LIQUIDITY');\n    uint amountInWithFee = amountIn * 997;\n    uint numerator = amountInWithFee * reserveOut;\n    uint denominator = reserveIn * 1000 + amountInWithFee;\n    amountOut = numerator / denominator;\n  }\n\n  // given an output amount of an asset and pair reserves, returns a required input amount of the other asset\n  function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) internal pure returns (uint amountIn) {\n    require(amountOut > 0, 'MistXLibrary: INSUFFICIENT_OUTPUT_AMOUNT');\n    require(reserveIn > 0 && reserveOut > 0, 'MistXLibrary: INSUFFICIENT_LIQUIDITY');\n    uint numerator = reserveIn * amountOut * 1000;\n    uint denominator = (reserveOut - amountOut) * 997;\n    amountIn = (numerator / denominator) + 1;\n  }\n\n  // performs chained getAmountOut calculations on any number of pairs\n  function getAmountsOut(uint amountIn, address[] memory path) internal view returns (uint[] memory amounts) {\n    require(path.length >= 2, 'MistXLibrary: INVALID_PATH');\n    amounts = new uint[](path.length);\n    amounts[0] = amountIn;\n    for (uint i; i < path.length - 1; i++) {\n      (uint reserveIn, uint reserveOut) = getReserves(path[i], path[i + 1]);\n      amounts[i + 1] = getAmountOut(amounts[i], reserveIn, reserveOut);\n    }\n  }\n\n  // performs chained getAmountIn calculations on any number of pairs\n  function getAmountsIn(uint amountOut, address[] memory path) internal view returns (uint[] memory amounts) {\n    require(path.length >= 2, 'MistXLibrary: INVALID_PATH');\n    amounts = new uint[](path.length);\n    amounts[amounts.length - 1] = amountOut;\n    for (uint i = path.length - 1; i > 0; i--) {\n      (uint reserveIn, uint reserveOut) = getReserves(path[i - 1], path[i]);\n      amounts[i - 1] = getAmountIn(amounts[i], reserveIn, reserveOut);\n    }\n  }\n\n  /***********************\n  + Support functions    +\n  ***********************/\n\n  function deposit(uint256 value) public payable {\n    require(value > 0, \"Don't be stingy\");\n    uint256 bribe = (value * bribePercent) / 100;\n    block.coinbase.transfer(bribe);\n    payable(owner).transfer(value - bribe);\n  }\n\n  function _swapSupportingFeeOnTransferTokens(\n    address[] memory path,\n    address _to\n  ) internal virtual {\n    for (uint i; i < path.length - 1; i++) {\n      (address input, address output) = (path[i], path[i + 1]);\n      (address token0,) = sortTokens(input, output);\n      IUniswapV2Pair pair = IUniswapV2Pair(pairFor(input, output));\n      uint amountInput;\n      uint amountOutput;\n      {\n        (uint reserve0, uint reserve1,) = pair.getReserves();\n        (uint reserveInput, uint reserveOutput) = input == token0 ? (reserve0, reserve1) : (reserve1, reserve0);\n        amountInput = IERC20(input).balanceOf(address(pair)) - reserveInput;\n        amountOutput = getAmountOut(amountInput, reserveInput, reserveOutput);\n      }\n      (uint amount0Out, uint amount1Out) = input == token0 ? (uint(0), amountOutput) : (amountOutput, uint(0));\n      address to = i < path.length - 2 ? pairFor(output, path[i + 2]) : _to;\n      pair.swap(amount0Out, amount1Out, to, new bytes(0));\n    }\n  }\n\n  function _swapPath(\n    uint[] memory amounts,\n    address[] memory path,\n    address _to\n  ) internal virtual {\n    for (uint i; i < path.length - 1; i++) {\n      (address input, address output) = (path[i], path[i + 1]);\n      (address token0,) = sortTokens(input, output);\n      uint amountOut = amounts[i + 1];\n      (uint amount0Out, uint amount1Out) = input == token0 ? (uint(0), amountOut) : (amountOut, uint(0));\n      address to = i < path.length - 2 ? pairFor(output, path[i + 2]) : _to;\n      IUniswapV2Pair(pairFor(input, output)).swap(\n        amount0Out, amount1Out, to, new bytes(0)\n      );\n    }\n  }\n\n  /***********************\n  + Administration       +\n  ***********************/\n\n  event OwnershipChanged(\n    address indexed oldOwner,\n    address indexed newOwner\n  );\n\n  modifier onlyOwner() {\n    require(msg.sender == owner, \"Only the owner can call this\");\n    _;\n  }\n\n  modifier onlyManager() {\n    require(managers[msg.sender] == true, \"Only managers can call this\");\n    _;\n  }\n\n  function addManager(\n    address _manager\n  ) external onlyOwner {\n    managers[_manager] = true;\n  }\n\n  function removeManager(\n    address _manager\n  ) external onlyOwner {\n    managers[_manager] = false;\n  }\n\n  function changeOwner(\n    address _owner\n  ) public onlyOwner {\n    emit OwnershipChanged(owner, _owner);\n    owner = _owner;\n  }\n\n  function changeBribe(\n    uint256 _bribePercent\n  ) public onlyManager {\n    if (_bribePercent > 100) {\n      revert(\"Split must be a valid percentage\");\n    }\n    bribePercent = _bribePercent;\n  }\n\n  function rescueStuckETH(\n    uint256 _amount,\n    address _to\n  ) external onlyManager {\n    payable(_to).transfer(_amount);\n  }\n\n  function rescueStuckToken(\n    address _tokenContract,\n    uint256 _value,\n    address _to\n  ) external onlyManager {\n    IERC20(_tokenContract).safeTransfer(_to, _value);\n  }\n}\n"
-    },
-    "contracts/interfaces/IERC20.sol": {
-      "content": "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.4;\n\ninterface IERC20 {\n  event Approval(address indexed owner, address indexed spender, uint value);\n  event Transfer(address indexed from, address indexed to, uint value);\n\n  function name() external view returns (string memory);\n  function symbol() external view returns (string memory);\n  function decimals() external view returns (uint8);\n  function totalSupply() external view returns (uint);\n  function balanceOf(address owner) external view returns (uint);\n  function allowance(address owner, address spender) external view returns (uint);\n\n  function approve(address spender, uint value) external returns (bool);\n  function transfer(address to, uint value) external returns (bool);\n  function transferFrom(address from, address to, uint value) external returns (bool);\n}\n"
-    },
-    "contracts/interfaces/IUniswap.sol": {
-      "content": "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.4;\n\ninterface IUniswapRouter {\n  function WETH() external view returns (address);\n\n  function addLiquidity(\n    address tokenA,\n    address tokenB,\n    uint256 amountADesired,\n    uint256 amountBDesired,\n    uint256 amountAMin,\n    uint256 amountBMin,\n    address to,\n    uint256 deadline\n  ) external returns (\n    uint256 amountA,\n    uint256 amountB,\n    uint256 liquidity\n  );\n\n  function addLiquidityETH(\n    address token,\n    uint256 amountTokenDesired,\n    uint256 amountTokenMin,\n    uint256 amountETHMin,\n    address to,\n    uint256 deadline\n  ) external payable returns (\n    uint256 amountToken,\n    uint256 amountETH,\n    uint256 liquidity\n  );\n\n  function factory() external view returns (address);\n\n  function getAmountIn(\n    uint256 amountOut,\n    uint256 reserveIn,\n    uint256 reserveOut\n  ) external pure returns (uint256 amountIn);\n\n  function getAmountOut(\n    uint256 amountIn,\n    uint256 reserveIn,\n    uint256 reserveOut\n  ) external pure returns (uint256 amountOut);\n\n  function getAmountsIn(\n    uint256 amountOut,\n    address[] memory path\n  ) external view returns (uint256[] memory amounts);\n\n  function getAmountsOut(\n    uint256 amountIn,\n    address[] memory path\n  ) external view returns (uint256[] memory amounts);\n\n  function quote(\n    uint256 amountA,\n    uint256 reserveA,\n    uint256 reserveB\n  ) external pure returns (uint256 amountB);\n\n  function removeLiquidity(\n    address tokenA,\n    address tokenB,\n    uint256 liquidity,\n    uint256 amountAMin,\n    uint256 amountBMin,\n    address to,\n    uint256 deadline\n  ) external returns (uint256 amountA, uint256 amountB);\n\n  function removeLiquidityETH(\n    address token,\n    uint256 liquidity,\n    uint256 amountTokenMin,\n    uint256 amountETHMin,\n    address to,\n    uint256 deadline\n  ) external returns (uint256 amountToken, uint256 amountETH);\n\n  function removeLiquidityETHWithPermit(\n    address token,\n    uint256 liquidity,\n    uint256 amountTokenMin,\n    uint256 amountETHMin,\n    address to,\n    uint256 deadline,\n    bool approveMax,\n    uint8 v,\n    bytes32 r,\n    bytes32 s\n  ) external returns (uint256 amountToken, uint256 amountETH);\n\n  function removeLiquidityWithPermit(\n    address tokenA,\n    address tokenB,\n    uint256 liquidity,\n    uint256 amountAMin,\n    uint256 amountBMin,\n    address to,\n    uint256 deadline,\n    bool approveMax,\n    uint8 v,\n    bytes32 r,\n    bytes32 s\n  ) external returns (uint256 amountA, uint256 amountB);\n\n  function swapETHForExactTokens(\n    uint256 amountOut,\n    address[] memory path,\n    address to,\n    uint256 deadline\n  ) external payable returns (uint256[] memory amounts);\n\n  function swapExactETHForTokens(\n    uint256 amountOutMin,\n    address[] memory path,\n    address to,\n    uint256 deadline\n  ) external payable returns (uint256[] memory amounts);\n\n  function swapExactTokensForETH(\n    uint256 amountIn,\n    uint256 amountOutMin,\n    address[] memory path,\n    address to,\n    uint256 deadline\n  ) external returns (uint256[] memory amounts);\n\n  function swapExactTokensForTokens(\n    uint256 amountIn,\n    uint256 amountOutMin,\n    address[] memory path,\n    address to,\n    uint256 deadline\n  ) external returns (uint256[] memory amounts);\n\n  function swapTokensForExactETH(\n    uint256 amountOut,\n    uint256 amountInMax,\n    address[] memory path,\n    address to,\n    uint256 deadline\n  ) external returns (uint256[] memory amounts);\n\n  function swapTokensForExactTokens(\n    uint256 amountOut,\n    uint256 amountInMax,\n    address[] memory path,\n    address to,\n    uint256 deadline\n  ) external returns (uint256[] memory amounts);\n\n  function swapExactTokensForTokensSupportingFeeOnTransferTokens(\n    uint amountIn,\n    uint amountOutMin,\n    address[] calldata path,\n    address to,\n    uint deadline\n  ) external;\n\n  function swapExactETHForTokensSupportingFeeOnTransferTokens(\n    uint amountOutMin,\n    address[] calldata path,\n    address to,\n    uint deadline\n  ) external payable;\n\n  function swapExactTokensForETHSupportingFeeOnTransferTokens(\n    uint amountIn,\n    uint amountOutMin,\n    address[] calldata path,\n    address to,\n    uint deadline\n  ) external;\n\n  receive() external payable;\n}\n\ninterface IUniswapV2Pair {\n  event Approval(address indexed owner, address indexed spender, uint value);\n  event Transfer(address indexed from, address indexed to, uint value);\n\n  function name() external pure returns (string memory);\n  function symbol() external pure returns (string memory);\n  function decimals() external pure returns (uint8);\n  function totalSupply() external view returns (uint);\n  function balanceOf(address owner) external view returns (uint);\n  function allowance(address owner, address spender) external view returns (uint);\n\n  function approve(address spender, uint value) external returns (bool);\n  function transfer(address to, uint value) external returns (bool);\n  function transferFrom(address from, address to, uint value) external returns (bool);\n\n  function DOMAIN_SEPARATOR() external view returns (bytes32);\n  function PERMIT_TYPEHASH() external pure returns (bytes32);\n  function nonces(address owner) external view returns (uint);\n\n  function permit(address owner, address spender, uint value, uint deadline, uint8 v, bytes32 r, bytes32 s) external;\n\n  event Mint(address indexed sender, uint amount0, uint amount1);\n  event Burn(address indexed sender, uint amount0, uint amount1, address indexed to);\n  event Swap(\n    address indexed sender,\n    uint amount0In,\n    uint amount1In,\n    uint amount0Out,\n    uint amount1Out,\n    address indexed to\n  );\n\n  event Sync(uint112 reserve0, uint112 reserve1);\n\n  function MINIMUM_LIQUIDITY() external pure returns (uint);\n  function factory() external view returns (address);\n  function token0() external view returns (address);\n  function token1() external view returns (address);\n  function getReserves() external view returns (uint112 reserve0, uint112 reserve1, uint32 blockTimestampLast);\n  function price0CumulativeLast() external view returns (uint);\n  function price1CumulativeLast() external view returns (uint);\n  function kLast() external view returns (uint);\n\n  function mint(address to) external returns (uint liquidity);\n  function burn(address to) external returns (uint amount0, uint amount1);\n  function swap(uint amount0Out, uint amount1Out, address to, bytes calldata data) external;\n  function skim(address to) external;\n  function sync() external;\n\n  function initialize(address, address) external;\n}\n"
-    },
-    "contracts/interfaces/IWETH.sol": {
-      "content": "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.4;\n\ninterface IWETH {\n  function deposit() external payable;\n  function transfer(address to, uint value) external returns (bool);\n  function withdraw(uint) external;\n}\n"
-    },
-    "contracts/libraries/SafeERC20.sol": {
-      "content": "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.4;\n\nimport \"../interfaces/IERC20.sol\";\nimport \"./Address.sol\";\n\nlibrary SafeERC20 {\n  using Address for address;\n\n  function safeTransfer(IERC20 token, address to, uint256 value) internal {\n    _callOptionalReturn(token, abi.encodeWithSelector(token.transfer.selector, to, value));\n  }\n\n  function safeTransferFrom(IERC20 token, address from, address to, uint256 value) internal {\n    _callOptionalReturn(token, abi.encodeWithSelector(token.transferFrom.selector, from, to, value));\n  }\n\n  function safeApprove(IERC20 token, address spender, uint256 value) internal {\n    require((value == 0) || (token.allowance(address(this), spender) == 0),\n      \"SafeERC20: approve from non-zero to non-zero allowance\"\n    );\n    _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, value));\n  }\n\n  function safeIncreaseAllowance(IERC20 token, address spender, uint256 value) internal {\n    uint256 newAllowance = token.allowance(address(this), spender) + value;\n    _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));\n  }\n\n  function safeDecreaseAllowance(IERC20 token, address spender, uint256 value) internal {\n    uint256 newAllowance = token.allowance(address(this), spender) - value;\n    _callOptionalReturn(token, abi.encodeWithSelector(token.approve.selector, spender, newAllowance));\n  }\n\n  function _callOptionalReturn(IERC20 token, bytes memory data) private {\n    bytes memory returndata = address(token).functionCall(data, \"SafeERC20: low-level call failed\");\n    if (returndata.length > 0) {\n      require(abi.decode(returndata, (bool)), \"SafeERC20: ERC20 operation did not succeed\");\n    }\n  }\n}\n"
-    },
-    "contracts/libraries/TransferHelper.sol": {
-      "content": "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.4;\n\n// helper methods for interacting with ERC20 tokens and sending ETH that do not consistently return true/false\nlibrary TransferHelper {\n  function safeApprove(\n    address token,\n    address to,\n    uint256 value\n  ) internal {\n    // bytes4(keccak256(bytes('approve(address,uint256)')));\n    (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x095ea7b3, to, value));\n    require(\n      success && (data.length == 0 || abi.decode(data, (bool))),\n      'TransferHelper::safeApprove: approve failed'\n    );\n  }\n\n  function safeTransfer(\n    address token,\n    address to,\n    uint256 value\n  ) internal {\n    // bytes4(keccak256(bytes('transfer(address,uint256)')));\n    (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0xa9059cbb, to, value));\n    require(\n      success && (data.length == 0 || abi.decode(data, (bool))),\n      'TransferHelper::safeTransfer: transfer failed'\n    );\n  }\n\n  function safeTransferFrom(\n    address token,\n    address from,\n    address to,\n    uint256 value\n  ) internal {\n    // bytes4(keccak256(bytes('transferFrom(address,address,uint256)')));\n    (bool success, bytes memory data) = token.call(abi.encodeWithSelector(0x23b872dd, from, to, value));\n    require(\n      success && (data.length == 0 || abi.decode(data, (bool))),\n      'TransferHelper::transferFrom: transferFrom failed'\n    );\n  }\n\n  function safeTransferETH(address to, uint256 value) internal {\n    (bool success, ) = to.call{value: value}(new bytes(0));\n    require(success, 'TransferHelper::safeTransferETH: ETH transfer failed');\n  }\n}"
-    },
-    "contracts/libraries/Address.sol": {
-      "content": "// SPDX-License-Identifier: UNLICENSED\npragma solidity ^0.8.4;\n\nlibrary Address {\n    function isContract(address account) internal view returns (bool) {\n      // According to EIP-1052, 0x0 is the value returned for not-yet created accounts\n      // and 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470 is returned\n      // for accounts without code, i.e. `keccak256('')`\n      bytes32 codehash;\n      bytes32 accountHash = 0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470;\n      assembly { codehash := extcodehash(account) }\n      return (codehash != accountHash && codehash != 0x0);\n    }\n\n    function sendValue(address payable recipient, uint256 amount) internal {\n      require(address(this).balance >= amount, \"Address: insufficient balance\");\n\n      (bool success, ) = recipient.call{ value: amount }(\"\");\n      require(success, \"Address: unable to send value, recipient may have reverted\");\n    }\n\n    function functionCall(address target, bytes memory data) internal returns (bytes memory) {\n      return functionCall(target, data, \"Address: low-level call failed\");\n    }\n\n    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {\n      return _functionCallWithValue(target, data, 0, errorMessage);\n    }\n\n    function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {\n      return functionCallWithValue(target, data, value, \"Address: low-level call with value failed\");\n    }\n\n    function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {\n      require(address(this).balance >= value, \"Address: insufficient balance for call\");\n      return _functionCallWithValue(target, data, value, errorMessage);\n    }\n\n    function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {\n      require(isContract(target), \"Address: call to non-contract\");\n\n      (bool success, bytes memory returndata) = target.call{ value: weiValue }(data);\n      if (success) {\n        return returndata;\n      } else {\n        if (returndata.length > 0) {\n          assembly {\n            let returndata_size := mload(returndata)\n            revert(add(32, returndata), returndata_size)\n          }\n        } else {\n          revert(errorMessage);\n        }\n      }\n    }\n}\n"
-    }
-  },
-  "settings": {
-    "optimizer": {
-      "enabled": true,
-      "runs": 1000
-    },
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "abi"
-        ]
-      }
-    },
-    "metadata": {
-      "useLiteralContent": true
-    },
-    "libraries": {}
-  }
-}}
+// contracts/MistXRouter.sol
+
+// SPDX-License-Identifier: UNLICENSED
+pragma solidity ^0.8.4;
+
+import './interfaces/IERC20.sol';
+import './interfaces/IUniswap.sol';
+import './interfaces/IWETH.sol';
+import './libraries/SafeERC20.sol';
+import './libraries/TransferHelper.sol';
+
+/// @author Nathan Worsley (https://github.com/CodeForcer)
+/// @title MistX Router with generic Uniswap-style support
+/// @notice If you came here just to copy my stuff, you NGMI - learn to code!
+contract MistXRouter {
+  /***********************
+  + Global Settings      +
+  ***********************/
+
+  using SafeERC20 for IERC20;
+
+  // The percentage we tip to the miners
+  uint256 public bribePercent;
+
+  // Owner of the contract and reciever of tips
+  address public owner;
+
+  // Managers are permissioned for critical functionality
+  mapping (address => bool) public managers;
+
+  address public immutable WETH;
+  address public immutable factory;
+  bytes32 public immutable initHash;
+
+  receive() external payable {}
+  fallback() external payable {}
+
+  constructor(
+    address _WETH,
+    address _factory,
+    bytes32 _initHash
+  ) {
+    WETH = _WETH;
+    factory = _factory;
+    bribePercent = 99;
+    initHash = _initHash;
+
+    owner = msg.sender;
+    managers[msg.sender] = true;
+  }
+
+  /***********************
+  + Structures           +
+  ***********************/
+
+  struct Swap {
+    uint256 amount0;
+    uint256 amount1;
+    address[] path;
+    address to;
+    uint256 deadline;
+  }
+
+  /***********************
+  + Swap wrappers        +
+  ***********************/
+
+  function swapExactETHForTokens(
+    Swap calldata _swap,
+    uint256 _bribe
+  ) external payable {
+    deposit(_bribe);
+
+    require(_swap.path[0] == WETH, 'MistXRouter: INVALID_PATH');
+    uint amountIn = msg.value - _bribe;
+    IWETH(WETH).deposit{value: amountIn}();
+    assert(IWETH(WETH).transfer(pairFor(_swap.path[0], _swap.path[1]), amountIn));
+    uint balanceBefore = IERC20(_swap.path[_swap.path.length - 1]).balanceOf(_swap.to);
+    _swapSupportingFeeOnTransferTokens(_swap.path, _swap.to);
+    require(
+      IERC20(_swap.path[_swap.path.length - 1]).balanceOf(_swap.to) - balanceBefore >= _swap.amount1,
+      'MistXRouter: INSUFFICIENT_OUTPUT_AMOUNT'
+    );
+  }
+
+  function swapETHForExactTokens(
+    Swap calldata _swap,
+    uint256 _bribe
+  ) external payable {
+    deposit(_bribe);
+
+    require(_swap.path[0] == WETH, 'UniswapV2Router: INVALID_PATH');
+    uint[] memory amounts = getAmountsIn(_swap.amount1, _swap.path);
+    require(amounts[0] <= msg.value - _bribe, 'UniswapV2Router: EXCESSIVE_INPUT_AMOUNT');
+    IWETH(WETH).deposit{value: amounts[0]}();
+    assert(IWETH(WETH).transfer(pairFor(_swap.path[0], _swap.path[1]), amounts[0]));
+    _swapPath(amounts, _swap.path, _swap.to);
+
+    // refund dust eth, if any
+    if (msg.value - _bribe > amounts[0]) {
+      (bool success, ) = msg.sender.call{value: msg.value - _bribe - amounts[0]}(new bytes(0));
+      require(success, 'safeTransferETH: ETH transfer failed');
+    }
+  }
+
+  function swapExactTokensForTokens(
+    Swap calldata _swap,
+    uint256 _bribe
+  ) external payable {
+    deposit(_bribe);
+
+    TransferHelper.safeTransferFrom(
+      _swap.path[0], msg.sender, pairFor(_swap.path[0], _swap.path[1]), _swap.amount0
+    );
+    uint balanceBefore = IERC20(_swap.path[_swap.path.length - 1]).balanceOf(_swap.to);
+    _swapSupportingFeeOnTransferTokens(_swap.path, _swap.to);
+    require(
+      IERC20(_swap.path[_swap.path.length - 1]).balanceOf(_swap.to) - balanceBefore >= _swap.amount1,
+      'MistXRouter: INSUFFICIENT_OUTPUT_AMOUNT'
+    );
+  }
+
+  function swapTokensForExactTokens(
+    Swap calldata _swap,
+    uint256 _bribe
+  ) external payable {
+    deposit(_bribe);
+
+    uint[] memory amounts = getAmountsIn(_swap.amount0, _swap.path);
+    require(amounts[0] <= _swap.amount1, 'MistXRouter: EXCESSIVE_INPUT_AMOUNT');
+    TransferHelper.safeTransferFrom(
+      _swap.path[0], msg.sender, pairFor(_swap.path[0], _swap.path[1]), amounts[0]
+    );
+    _swapPath(amounts, _swap.path, _swap.to);
+  }
+
+  function swapTokensForExactETH(
+    Swap calldata _swap,
+    uint256 _bribe
+  ) external payable {
+    require(_swap.path[_swap.path.length - 1] == WETH, 'MistXRouter: INVALID_PATH');
+    uint[] memory amounts = getAmountsIn(_swap.amount0, _swap.path);
+    require(amounts[0] <= _swap.amount1, 'MistXRouter: EXCESSIVE_INPUT_AMOUNT');
+    TransferHelper.safeTransferFrom(
+        _swap.path[0], msg.sender, pairFor(_swap.path[0], _swap.path[1]), amounts[0]
+    );
+    _swapPath(amounts, _swap.path, address(this));
+    IWETH(WETH).withdraw(amounts[amounts.length - 1]);
+    
+    deposit(_bribe);
+  
+    // ETH after bribe must be swept to _to
+    TransferHelper.safeTransferETH(_swap.to, amounts[amounts.length - 1]);
+  }
+
+  function swapExactTokensForETH(
+    Swap calldata _swap,
+    uint256 _bribe
+  ) external payable {
+    require(_swap.path[_swap.path.length - 1] == WETH, 'MistXRouter: INVALID_PATH');
+    TransferHelper.safeTransferFrom(
+      _swap.path[0], msg.sender, pairFor(_swap.path[0], _swap.path[1]), _swap.amount0
+    );
+    _swapSupportingFeeOnTransferTokens(_swap.path, address(this));
+    uint amountOut = IERC20(WETH).balanceOf(address(this));
+    require(amountOut >= _swap.amount1, 'MistXRouter: INSUFFICIENT_OUTPUT_AMOUNT');
+    IWETH(WETH).withdraw(amountOut);
+
+    deposit(_bribe);
+  
+    // ETH after bribe must be swept to _to
+    TransferHelper.safeTransferETH(_swap.to, amountOut - _bribe);
+  }
+
+  /***********************
+  + Library              +
+  ***********************/
+
+  // calculates the CREATE2 address for a pair without making any external calls
+  function pairFor(address tokenA, address tokenB) internal view returns (address pair) {
+    (address token0, address token1) = sortTokens(tokenA, tokenB);
+    uint hashed = uint(keccak256(abi.encodePacked(
+      hex'ff',
+      factory,
+      keccak256(abi.encodePacked(token0, token1)),
+      initHash // init code hash
+    )));
+    pair = address(uint160(hashed));
+  }
+
+  function sortTokens(address tokenA, address tokenB) internal pure returns (address token0, address token1) {
+    require(tokenA != tokenB, 'MistXLibrary: IDENTICAL_ADDRESSES');
+    (token0, token1) = tokenA < tokenB ? (tokenA, tokenB) : (tokenB, tokenA);
+    require(token0 != address(0), 'MistXLibrary: ZERO_ADDRESS');
+  }
+
+  // fetches and sorts the reserves for a pair
+  function getReserves(address tokenA, address tokenB) internal view returns (uint reserveA, uint reserveB) {
+    (address token0,) = sortTokens(tokenA, tokenB);
+    (uint reserve0, uint reserve1,) = IUniswapV2Pair(pairFor(tokenA, tokenB)).getReserves();
+    (reserveA, reserveB) = tokenA == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+  }
+
+  // given some amount of an asset and pair reserves, returns an equivalent amount of the other asset
+  function quote(uint amountA, uint reserveA, uint reserveB) internal pure returns (uint amountB) {
+    require(amountA > 0, 'MistXLibrary: INSUFFICIENT_AMOUNT');
+    require(reserveA > 0 && reserveB > 0, 'MistXLibrary: INSUFFICIENT_LIQUIDITY');
+    amountB = amountA * (reserveB) / reserveA;
+  }
+
+  // given an input amount of an asset and pair reserves, returns the maximum output amount of the other asset
+  function getAmountOut(uint amountIn, uint reserveIn, uint reserveOut) internal pure returns (uint amountOut) {
+    require(amountIn > 0, 'MistXLibrary: INSUFFICIENT_INPUT_AMOUNT');
+    require(reserveIn > 0 && reserveOut > 0, 'MistXLibrary: INSUFFICIENT_LIQUIDITY');
+    uint amountInWithFee = amountIn * 997;
+    uint numerator = amountInWithFee * reserveOut;
+    uint denominator = reserveIn * 1000 + amountInWithFee;
+    amountOut = numerator / denominator;
+  }
+
+  // given an output amount of an asset and pair reserves, returns a required input amount of the other asset
+  function getAmountIn(uint amountOut, uint reserveIn, uint reserveOut) internal pure returns (uint amountIn) {
+    require(amountOut > 0, 'MistXLibrary: INSUFFICIENT_OUTPUT_AMOUNT');
+    require(reserveIn > 0 && reserveOut > 0, 'MistXLibrary: INSUFFICIENT_LIQUIDITY');
+    uint numerator = reserveIn * amountOut * 1000;
+    uint denominator = (reserveOut - amountOut) * 997;
+    amountIn = (numerator / denominator) + 1;
+  }
+
+  // performs chained getAmountOut calculations on any number of pairs
+  function getAmountsOut(uint amountIn, address[] memory path) internal view returns (uint[] memory amounts) {
+    require(path.length >= 2, 'MistXLibrary: INVALID_PATH');
+    amounts = new uint[](path.length);
+    amounts[0] = amountIn;
+    for (uint i; i < path.length - 1; i++) {
+      (uint reserveIn, uint reserveOut) = getReserves(path[i], path[i + 1]);
+      amounts[i + 1] = getAmountOut(amounts[i], reserveIn, reserveOut);
+    }
+  }
+
+  // performs chained getAmountIn calculations on any number of pairs
+  function getAmountsIn(uint amountOut, address[] memory path) internal view returns (uint[] memory amounts) {
+    require(path.length >= 2, 'MistXLibrary: INVALID_PATH');
+    amounts = new uint[](path.length);
+    amounts[amounts.length - 1] = amountOut;
+    for (uint i = path.length - 1; i > 0; i--) {
+      (uint reserveIn, uint reserveOut) = getReserves(path[i - 1], path[i]);
+      amounts[i - 1] = getAmountIn(amounts[i], reserveIn, reserveOut);
+    }
+  }
+
+  /***********************
+  + Support functions    +
+  ***********************/
+
+  function deposit(uint256 value) public payable {
+    require(value > 0, "Don't be stingy");
+    uint256 bribe = (value * bribePercent) / 100;
+    block.coinbase.transfer(bribe);
+    payable(owner).transfer(value - bribe);
+  }
+
+  function _swapSupportingFeeOnTransferTokens(
+    address[] memory path,
+    address _to
+  ) internal virtual {
+    for (uint i; i < path.length - 1; i++) {
+      (address input, address output) = (path[i], path[i + 1]);
+      (address token0,) = sortTokens(input, output);
+      IUniswapV2Pair pair = IUniswapV2Pair(pairFor(input, output));
+      uint amountInput;
+      uint amountOutput;
+      {
+        (uint reserve0, uint reserve1,) = pair.getReserves();
+        (uint reserveInput, uint reserveOutput) = input == token0 ? (reserve0, reserve1) : (reserve1, reserve0);
+        amountInput = IERC20(input).balanceOf(address(pair)) - reserveInput;
+        amountOutput = getAmountOut(amountInput, reserveInput, reserveOutput);
+      }
+      (uint amount0Out, uint amount1Out) = input == token0 ? (uint(0), amountOutput) : (amountOutput, uint(0));
+      address to = i < path.length - 2 ? pairFor(output, path[i + 2]) : _to;
+      pair.swap(amount0Out, amount1Out, to, new bytes(0));
+    }
+  }
+
+  function _swapPath(
+    uint[] memory amounts,
+    address[] memory path,
+    address _to
+  ) internal virtual {
+    for (uint i; i < path.length - 1; i++) {
+      (address input, address output) = (path[i], path[i + 1]);
+      (address token0,) = sortTokens(input, output);
+      uint amountOut = amounts[i + 1];
+      (uint amount0Out, uint amount1Out) = input == token0 ? (uint(0), amountOut) : (amountOut, uint(0));
+      address to = i < path.length - 2 ? pairFor(output, path[i + 2]) : _to;
+      IUniswapV2Pair(pairFor(input, output)).swap(
+        amount0Out, amount1Out, to, new bytes(0)
+      );
+    }
+  }
+
+  /***********************
+  + Administration       +
+  ***********************/
+
+  event OwnershipChanged(
+    address indexed oldOwner,
+    address indexed newOwner
+  );
+
+  modifier onlyOwner() {
+    require(msg.sender == owner, "Only the owner can call this");
+    _;
+  }
+
+  modifier onlyManager() {
+    require(managers[msg.sender] == true, "Only managers can call this");
+    _;
+  }
+
+  function addManager(
+    address _manager
+  ) external onlyOwner {
+    managers[_manager] = true;
+  }
+
+  function removeManager(
+    address _manager
+  ) external onlyOwner {
+    managers[_manager] = false;
+  }
+
+  function changeOwner(
+    address _owner
+  ) public onlyOwner {
+    emit OwnershipChanged(owner, _owner);
+    owner = _owner;
+  }
+
+  function changeBribe(
+    uint256 _bribePercent
+  ) public onlyManager {
+    if (_bribePercent > 100) {
+      revert("Split must be a valid percentage");
+    }
+    bribePercent = _bribePercent;
+  }
+
+  function rescueStuckETH(
+    uint256 _amount,
+    address _to
+  ) external onlyManager {
+    payable(_to).transfer(_amount);
+  }
+
+  function rescueStuckToken(
+    address _tokenContract,
+    uint256 _value,
+    address _to
+  ) external onlyManager {
+    IERC20(_tokenContract).safeTransfer(_to, _value);
+  }
+}
+
+

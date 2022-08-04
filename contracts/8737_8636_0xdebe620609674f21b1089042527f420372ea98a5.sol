@@ -1,39 +1,140 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "contracts/TAVA.sol": {
-      "content": "// SPDX-License-Identifier: MIT\r\npragma solidity 0.8.9;\r\n\r\nimport \"./ERC20Interface.sol\";\r\nimport \"./Pausable.sol\";\r\n\r\ncontract Tava is ERC20Interface, Pausable{\r\n    string private _name = \"ALTAVA\";\r\n    string private _symbol = \"TAVA\";\r\n    uint8 private _decimals = 18;\r\n    uint256 private _totalSupply; \r\n\r\n    mapping(address => uint256) private _balances;\r\n    mapping(address => mapping(address => uint256)) private _allowances;\r\n\r\n    /* ERC20Interface Implements */\r\n    function name() public view returns (string memory) {\r\n        return _name;\r\n    }\r\n\r\n    function symbol() public view returns (string memory) {\r\n        return _symbol;\r\n    }\r\n\r\n    function decimals() public view returns (uint8) {\r\n        return _decimals;\r\n    }\r\n\r\n     function totalSupply() public view override returns (uint256) {\r\n        return _totalSupply;\r\n    }\r\n\r\n    function balanceOf(address account) public view override returns (uint256) {\r\n        return _balances[account];\r\n    }\r\n\r\n    function transfer(address recipient, uint256 amount) public whenNotPaused override returns (bool) {\r\n        _transfer(msg.sender, recipient, amount);\r\n        return true;\r\n    }\r\n\r\n    function _transfer(\r\n        address sender,\r\n        address recipient,\r\n        uint256 amount\r\n    ) internal whenNotPaused virtual {\r\n        require(sender != address(0), \"ERC20: transfer from the zero address\");\r\n        require(recipient != address(0), \"ERC20: transfer to the zero address\");\r\n        _beforeTokenTransfer(sender, recipient, amount);\r\n        uint256 senderBalance = _balances[sender];\r\n        require(senderBalance >= amount, \"ERC20: transfer amount exceeds balance\");\r\n        unchecked {\r\n            _balances[sender] = senderBalance - amount;\r\n        }\r\n        _balances[recipient] += amount;\r\n        emit Transfer(sender, recipient, amount);\r\n        _afterTokenTransfer(sender, recipient, amount);\r\n    }\r\n\r\n    function allowance(address owner, address spender) public view override returns (uint256) {\r\n         return _allowances[owner][spender];\r\n    }\r\n\r\n    function approve(address spender, uint256 amount) public whenNotPaused override returns (bool) {\r\n        _approve(msg.sender, spender, amount);\r\n        return true;\r\n    }\r\n\r\n    function _approve(\r\n        address owner,\r\n        address spender,\r\n        uint256 amount\r\n    ) internal whenNotPaused virtual {\r\n        require(owner != address(0), \"ERC20: approve from the zero address\");\r\n        require(spender != address(0), \"ERC20: approve to the zero address\");\r\n        _allowances[owner][spender] = amount;\r\n        emit Approval(owner, spender, amount);\r\n    }\r\n\r\n// mint하고 timelock contract에 토큰 입금 (transferfrom 사용) \r\n    function transferFrom(address sender, address recipient, uint256 amount) public whenNotPaused override returns (bool) {\r\n         _transfer(sender, recipient, amount);\r\n         uint256 currentAllowance = _allowances[sender][msg.sender];\r\n         require(currentAllowance >= amount, \"ERC20: transfer amount exceeds allowance\");\r\n         unchecked {\r\n         _approve(sender, msg.sender, currentAllowance - amount);\r\n        }\r\n        return true;\r\n    }\r\n\r\n    function _mint(address account, uint256 amount) internal whenNotPaused virtual {\r\n        require(account != address(0), \"ERC20: mint to the zero address\");\r\n        _beforeTokenTransfer(address(0), account, amount);\r\n        _totalSupply += amount;\r\n        _balances[account] += amount;\r\n        emit Transfer(address(0), account, amount);\r\n        _afterTokenTransfer(address(0), account, amount);\r\n    }\r\n\r\n    /*added mint function*/\r\n    function mint (address account, uint256 amount) external whenNotPaused onlyOwner{\r\n        require(msg.sender == account);\r\n        \r\n        _mint(account, amount);\r\n    }\r\n\r\n    function _burn(address account, uint256 amount) internal whenNotPaused virtual {\r\n       require(account != address(0), \"ERC20: burn from the zero address\");\r\n        _beforeTokenTransfer(account, address(0), amount);\r\n        uint256 accountBalance = _balances[account];\r\n        require(accountBalance >= amount, \"ERC20: burn amount exceeds balance\");\r\n        unchecked {\r\n            _balances[account] = accountBalance - amount;\r\n        }\r\n        _totalSupply -= amount;\r\n        emit Transfer(account, address(0), amount);\r\n        _afterTokenTransfer(account, address(0), amount);\r\n    }\r\n\r\n    /*added burn function*/\r\n    function burn (address account, uint256 amount) public whenNotPaused onlyOwner{\r\n        require (msg.sender == account );\r\n        _burn(account, amount);\r\n    }\r\n\r\n    function _beforeTokenTransfer(\r\n        address from,\r\n        address to,\r\n        uint256 amount\r\n    ) internal virtual {}\r\n\r\n    function _afterTokenTransfer(\r\n        address from,\r\n        address to,\r\n        uint256 amount\r\n    ) internal virtual {}\r\n}"
-    },
-    "contracts/ERC20Interface.sol": {
-      "content": "// SPDX-License-Identifier: MIT\r\n\r\npragma solidity 0.8.9;\r\n\r\ninterface ERC20Interface {\r\n\r\n    /* IERC20 Metadata */\r\n\r\n    function name() external view returns (string memory);\r\n\r\n    function symbol() external view returns (string memory);\r\n\r\n    function decimals() external view returns (uint8);\r\n\r\n    /* IERC20 */\r\n\r\n    function totalSupply() external view returns (uint256);\r\n\r\n    function balanceOf(address account) external view returns (uint256);\r\n\r\n    function transfer(address recipient, uint256 amount) external returns (bool);\r\n\r\n    function allowance(address owner, address spender) external view returns (uint256);\r\n\r\n    function approve(address spender, uint256 amount) external returns (bool);\r\n\r\n     function transferFrom(\r\n        address sender,\r\n        address recipient,\r\n        uint256 amount\r\n    ) external returns (bool);\r\n\r\n    event Transfer(address indexed from, address indexed to, uint256 value);\r\n\r\n    event Approval(address indexed owner, address indexed spender, uint256 value);\r\n}"
-    },
-    "contracts/Pausable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\r\n\r\npragma solidity 0.8.9;\r\n\r\nimport \"./Ownable.sol\";\r\n\r\ncontract Pausable is Ownable {\r\n\r\n    //Emitted when the pause is triggered by 'account'\r\n    event Paused(address account);\r\n    // Emitted when the pause is lifted by 'account'\r\n    event Unpaused(address account);\r\n\r\n    bool private _paused;\r\n\r\n    constructor() {\r\n        _paused = false;\r\n    }\r\n\r\n    function paused() public view virtual returns (bool) {\r\n        return _paused;\r\n    }\r\n\r\n    modifier whenNotPaused() {\r\n        require(!paused(), \"Pausable: paused\");\r\n        _;\r\n    }\r\n\r\n    modifier whenPaused() {\r\n        require(paused(), \"Pausable: not paused\");\r\n        _;\r\n    }\r\n\r\n    function pause() public onlyOwner whenNotPaused {\r\n        _paused = true;\r\n        emit Paused(_msgSender());\r\n    }\r\n\r\n    function unpause() public onlyOwner whenPaused {\r\n        _paused = false;\r\n        emit Unpaused(_msgSender());\r\n    }\r\n}"
-    },
-    "contracts/Ownable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\r\n\r\npragma solidity 0.8.9;\r\n\r\nimport \"./Context.sol\";\r\n\r\ncontract Ownable is Context{\r\n   \r\n    address private _owner;\r\n\r\n    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);\r\n\r\n    constructor() {\r\n        _transferOwnership(_msgSender());\r\n    }\r\n\r\n     function owner() public view virtual returns (address) {\r\n        return _owner;\r\n    }\r\n\r\n     modifier onlyOwner() {\r\n        require(owner() == _msgSender(), \"Ownable: caller is not the owner\");\r\n        _;\r\n    }\r\n\r\n     function transferOwnership(address newOwner) public virtual onlyOwner {\r\n        require(newOwner != address(0), \"Ownable: new owner is the zero address\");\r\n        _transferOwnership(newOwner);\r\n    }\r\n\r\n    function _transferOwnership(address newOwner) internal virtual {\r\n        address oldOwner = _owner;\r\n        _owner = newOwner;\r\n        emit OwnershipTransferred(oldOwner, newOwner);\r\n    }\r\n\r\n}"
-    },
-    "contracts/Context.sol": {
-      "content": "// SPDX-License-Identifier: MIT\r\n\r\npragma solidity 0.8.9;\r\n\r\ncontract Context{\r\n     function _msgSender() internal view virtual returns (address) {\r\n        return msg.sender;\r\n    }\r\n\r\n     function _msgData() internal view virtual returns (bytes calldata) {\r\n        return msg.data;\r\n    }\r\n}"
+// contracts/TAVA.sol
+
+// SPDX-License-Identifier: MIT
+pragma solidity 0.8.9;
+
+import "./ERC20Interface.sol";
+import "./Pausable.sol";
+
+contract Tava is ERC20Interface, Pausable{
+    string private _name = "ALTAVA";
+    string private _symbol = "TAVA";
+    uint8 private _decimals = 18;
+    uint256 private _totalSupply; 
+
+    mapping(address => uint256) private _balances;
+    mapping(address => mapping(address => uint256)) private _allowances;
+
+    /* ERC20Interface Implements */
+    function name() public view returns (string memory) {
+        return _name;
     }
-  },
-  "settings": {
-    "optimizer": {
-      "enabled": true,
-      "runs": 200
-    },
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "devdoc",
-          "userdoc",
-          "metadata",
-          "abi"
-        ]
-      }
-    },
-    "libraries": {}
-  }
-}}
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view returns (uint8) {
+        return _decimals;
+    }
+
+     function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public whenNotPaused override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function _transfer(
+        address sender,
+        address recipient,
+        uint256 amount
+    ) internal whenNotPaused virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+        _beforeTokenTransfer(sender, recipient, amount);
+        uint256 senderBalance = _balances[sender];
+        require(senderBalance >= amount, "ERC20: transfer amount exceeds balance");
+        unchecked {
+            _balances[sender] = senderBalance - amount;
+        }
+        _balances[recipient] += amount;
+        emit Transfer(sender, recipient, amount);
+        _afterTokenTransfer(sender, recipient, amount);
+    }
+
+    function allowance(address owner, address spender) public view override returns (uint256) {
+         return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public whenNotPaused override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 amount
+    ) internal whenNotPaused virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+// mint하고 timelock contract에 토큰 입금 (transferfrom 사용) 
+    function transferFrom(address sender, address recipient, uint256 amount) public whenNotPaused override returns (bool) {
+         _transfer(sender, recipient, amount);
+         uint256 currentAllowance = _allowances[sender][msg.sender];
+         require(currentAllowance >= amount, "ERC20: transfer amount exceeds allowance");
+         unchecked {
+         _approve(sender, msg.sender, currentAllowance - amount);
+        }
+        return true;
+    }
+
+    function _mint(address account, uint256 amount) internal whenNotPaused virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+        _beforeTokenTransfer(address(0), account, amount);
+        _totalSupply += amount;
+        _balances[account] += amount;
+        emit Transfer(address(0), account, amount);
+        _afterTokenTransfer(address(0), account, amount);
+    }
+
+    /*added mint function*/
+    function mint (address account, uint256 amount) external whenNotPaused onlyOwner{
+        require(msg.sender == account);
+        
+        _mint(account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal whenNotPaused virtual {
+       require(account != address(0), "ERC20: burn from the zero address");
+        _beforeTokenTransfer(account, address(0), amount);
+        uint256 accountBalance = _balances[account];
+        require(accountBalance >= amount, "ERC20: burn amount exceeds balance");
+        unchecked {
+            _balances[account] = accountBalance - amount;
+        }
+        _totalSupply -= amount;
+        emit Transfer(account, address(0), amount);
+        _afterTokenTransfer(account, address(0), amount);
+    }
+
+    /*added burn function*/
+    function burn (address account, uint256 amount) public whenNotPaused onlyOwner{
+        require (msg.sender == account );
+        _burn(account, amount);
+    }
+
+    function _beforeTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+
+    function _afterTokenTransfer(
+        address from,
+        address to,
+        uint256 amount
+    ) internal virtual {}
+}
+

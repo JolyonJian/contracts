@@ -1,57 +1,150 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "contracts/BobuDistributor.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.4;\n\nimport '@openzeppelin/contracts/access/Ownable.sol';\nimport '@openzeppelin/contracts/security/ReentrancyGuard.sol';\nimport '@openzeppelin/contracts/token/ERC1155/IERC1155.sol';\nimport '@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol';\nimport '@openzeppelin/contracts/utils/cryptography/ECDSA.sol';\n\nerror Phase1SaleNotStarted();\nerror Phase2SaleNotStarted();\nerror MaxPhase1ClaimsReached();\nerror MaxPhase2ClaimsReached();\nerror InsufficientAmount();\nerror CallerIsContract();\nerror TransferFailed();\nerror InvalidSignature();\n\ncontract BobuDistributor is Ownable, ReentrancyGuard, ERC1155Holder {\n  using ECDSA for bytes32;\n\n  mapping(address => uint256) public numFractionsClaimed;\n\n  IERC1155 private immutable fractional1155;\n\n  uint256 private immutable fractionIdIn1155;\n  struct SaleDetails {\n    uint128 phase1SaleTime;\n    uint128 phase2SaleTime;\n  }\n  SaleDetails public saleDetails;\n\n  uint256 constant PRICE_FOR_ONE = 0.01 ether;\n  address private signer;\n\n  constructor(address fractional1155Address_, uint256 fractionIdIn1155_) {\n    fractional1155 = IERC1155(fractional1155Address_);\n    fractionIdIn1155 = fractionIdIn1155_;\n  }\n\n  function claimPhase1(bytes calldata _signature)\n    external\n    payable\n    callerIsUser\n  {\n    SaleDetails memory saleDetailsLoc = saleDetails;\n    if (\n      saleDetailsLoc.phase1SaleTime == 0 ||\n      block.timestamp < saleDetailsLoc.phase1SaleTime\n    ) {\n      revert Phase1SaleNotStarted();\n    }\n    if (numFractionsClaimed[msg.sender] != 0) {\n      revert MaxPhase1ClaimsReached();\n    }\n    if (msg.value < PRICE_FOR_ONE) revert InsufficientAmount();\n    if (!_verify(_signature)) revert InvalidSignature();\n\n    // It is impossible to overflow here because we restrict the number of claims\n    // per wallet to be 101.\n    unchecked {\n      numFractionsClaimed[msg.sender]++;\n    }\n\n    fractional1155.safeTransferFrom(\n      address(this),\n      msg.sender,\n      fractionIdIn1155,\n      1,\n      '0'\n    );\n  }\n\n  function claimPhase2(uint32 amount, bytes calldata _signature)\n    external\n    payable\n    callerIsUser\n  {\n    SaleDetails memory saleDetailsLoc = saleDetails;\n    if (\n      saleDetailsLoc.phase2SaleTime == 0 ||\n      block.timestamp < saleDetailsLoc.phase2SaleTime\n    ) {\n      revert Phase2SaleNotStarted();\n    }\n    if (numFractionsClaimed[msg.sender] + amount > 101) {\n      revert MaxPhase2ClaimsReached();\n    }\n    if (msg.value < (PRICE_FOR_ONE * amount)) revert InsufficientAmount();\n\n    if (!_verify(_signature)) revert InvalidSignature();\n\n    // It is impossible to overflow here because we restrict the number of claims\n    // per wallet to be 101.\n    unchecked {\n      numFractionsClaimed[msg.sender] += amount;\n    }\n\n    fractional1155.safeTransferFrom(\n      address(this),\n      msg.sender,\n      fractionIdIn1155,\n      amount,\n      '0'\n    );\n  }\n\n  function setSaleDetails(uint128 phase1SaleTime_, uint128 phase2SaleTime_)\n    external\n    onlyOwner\n  {\n    saleDetails = SaleDetails(phase1SaleTime_, phase2SaleTime_);\n  }\n\n  modifier callerIsUser() {\n    if (tx.origin != msg.sender) revert CallerIsContract();\n    _;\n  }\n\n  function withdrawMoney() external onlyOwner nonReentrant {\n    (bool success, ) = msg.sender.call{value: address(this).balance}('');\n    if (!success) revert TransferFailed();\n  }\n\n  function withdrawRemainingBobus() external onlyOwner nonReentrant {\n    fractional1155.safeTransferFrom(\n      address(this),\n      msg.sender,\n      fractionIdIn1155,\n      fractional1155.balanceOf(address(this), fractionIdIn1155),\n      '0'\n    );\n  }\n\n  function _verify(bytes memory _signature) private view returns (bool) {\n    bytes32 hashVal = keccak256(abi.encodePacked(msg.sender));\n    bytes32 signedHash = hashVal.toEthSignedMessageHash();\n    address signingAddress = signedHash.recover(_signature);\n    return signingAddress == signer;\n  }\n\n  function setSigner(address _signer) external onlyOwner {\n    signer = _signer;\n  }\n}\n"
-    },
-    "@openzeppelin/contracts/access/Ownable.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\nimport \"../utils/Context.sol\";\n\n/**\n * @dev Contract module which provides a basic access control mechanism, where\n * there is an account (an owner) that can be granted exclusive access to\n * specific functions.\n *\n * By default, the owner account will be the one that deploys the contract. This\n * can later be changed with {transferOwnership}.\n *\n * This module is used through inheritance. It will make available the modifier\n * `onlyOwner`, which can be applied to your functions to restrict their use to\n * the owner.\n */\nabstract contract Ownable is Context {\n    address private _owner;\n\n    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);\n\n    /**\n     * @dev Initializes the contract setting the deployer as the initial owner.\n     */\n    constructor() {\n        _setOwner(_msgSender());\n    }\n\n    /**\n     * @dev Returns the address of the current owner.\n     */\n    function owner() public view virtual returns (address) {\n        return _owner;\n    }\n\n    /**\n     * @dev Throws if called by any account other than the owner.\n     */\n    modifier onlyOwner() {\n        require(owner() == _msgSender(), \"Ownable: caller is not the owner\");\n        _;\n    }\n\n    /**\n     * @dev Leaves the contract without owner. It will not be possible to call\n     * `onlyOwner` functions anymore. Can only be called by the current owner.\n     *\n     * NOTE: Renouncing ownership will leave the contract without an owner,\n     * thereby removing any functionality that is only available to the owner.\n     */\n    function renounceOwnership() public virtual onlyOwner {\n        _setOwner(address(0));\n    }\n\n    /**\n     * @dev Transfers ownership of the contract to a new account (`newOwner`).\n     * Can only be called by the current owner.\n     */\n    function transferOwnership(address newOwner) public virtual onlyOwner {\n        require(newOwner != address(0), \"Ownable: new owner is the zero address\");\n        _setOwner(newOwner);\n    }\n\n    function _setOwner(address newOwner) private {\n        address oldOwner = _owner;\n        _owner = newOwner;\n        emit OwnershipTransferred(oldOwner, newOwner);\n    }\n}\n"
-    },
-    "@openzeppelin/contracts/security/ReentrancyGuard.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\n/**\n * @dev Contract module that helps prevent reentrant calls to a function.\n *\n * Inheriting from `ReentrancyGuard` will make the {nonReentrant} modifier\n * available, which can be applied to functions to make sure there are no nested\n * (reentrant) calls to them.\n *\n * Note that because there is a single `nonReentrant` guard, functions marked as\n * `nonReentrant` may not call one another. This can be worked around by making\n * those functions `private`, and then adding `external` `nonReentrant` entry\n * points to them.\n *\n * TIP: If you would like to learn more about reentrancy and alternative ways\n * to protect against it, check out our blog post\n * https://blog.openzeppelin.com/reentrancy-after-istanbul/[Reentrancy After Istanbul].\n */\nabstract contract ReentrancyGuard {\n    // Booleans are more expensive than uint256 or any type that takes up a full\n    // word because each write operation emits an extra SLOAD to first read the\n    // slot's contents, replace the bits taken up by the boolean, and then write\n    // back. This is the compiler's defense against contract upgrades and\n    // pointer aliasing, and it cannot be disabled.\n\n    // The values being non-zero value makes deployment a bit more expensive,\n    // but in exchange the refund on every call to nonReentrant will be lower in\n    // amount. Since refunds are capped to a percentage of the total\n    // transaction's gas, it is best to keep them low in cases like this one, to\n    // increase the likelihood of the full refund coming into effect.\n    uint256 private constant _NOT_ENTERED = 1;\n    uint256 private constant _ENTERED = 2;\n\n    uint256 private _status;\n\n    constructor() {\n        _status = _NOT_ENTERED;\n    }\n\n    /**\n     * @dev Prevents a contract from calling itself, directly or indirectly.\n     * Calling a `nonReentrant` function from another `nonReentrant`\n     * function is not supported. It is possible to prevent this from happening\n     * by making the `nonReentrant` function external, and make it call a\n     * `private` function that does the actual work.\n     */\n    modifier nonReentrant() {\n        // On the first call to nonReentrant, _notEntered will be true\n        require(_status != _ENTERED, \"ReentrancyGuard: reentrant call\");\n\n        // Any calls to nonReentrant after this point will fail\n        _status = _ENTERED;\n\n        _;\n\n        // By storing the original value once again, a refund is triggered (see\n        // https://eips.ethereum.org/EIPS/eip-2200)\n        _status = _NOT_ENTERED;\n    }\n}\n"
-    },
-    "@openzeppelin/contracts/token/ERC1155/IERC1155.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\nimport \"../../utils/introspection/IERC165.sol\";\n\n/**\n * @dev Required interface of an ERC1155 compliant contract, as defined in the\n * https://eips.ethereum.org/EIPS/eip-1155[EIP].\n *\n * _Available since v3.1._\n */\ninterface IERC1155 is IERC165 {\n    /**\n     * @dev Emitted when `value` tokens of token type `id` are transferred from `from` to `to` by `operator`.\n     */\n    event TransferSingle(address indexed operator, address indexed from, address indexed to, uint256 id, uint256 value);\n\n    /**\n     * @dev Equivalent to multiple {TransferSingle} events, where `operator`, `from` and `to` are the same for all\n     * transfers.\n     */\n    event TransferBatch(\n        address indexed operator,\n        address indexed from,\n        address indexed to,\n        uint256[] ids,\n        uint256[] values\n    );\n\n    /**\n     * @dev Emitted when `account` grants or revokes permission to `operator` to transfer their tokens, according to\n     * `approved`.\n     */\n    event ApprovalForAll(address indexed account, address indexed operator, bool approved);\n\n    /**\n     * @dev Emitted when the URI for token type `id` changes to `value`, if it is a non-programmatic URI.\n     *\n     * If an {URI} event was emitted for `id`, the standard\n     * https://eips.ethereum.org/EIPS/eip-1155#metadata-extensions[guarantees] that `value` will equal the value\n     * returned by {IERC1155MetadataURI-uri}.\n     */\n    event URI(string value, uint256 indexed id);\n\n    /**\n     * @dev Returns the amount of tokens of token type `id` owned by `account`.\n     *\n     * Requirements:\n     *\n     * - `account` cannot be the zero address.\n     */\n    function balanceOf(address account, uint256 id) external view returns (uint256);\n\n    /**\n     * @dev xref:ROOT:erc1155.adoc#batch-operations[Batched] version of {balanceOf}.\n     *\n     * Requirements:\n     *\n     * - `accounts` and `ids` must have the same length.\n     */\n    function balanceOfBatch(address[] calldata accounts, uint256[] calldata ids)\n        external\n        view\n        returns (uint256[] memory);\n\n    /**\n     * @dev Grants or revokes permission to `operator` to transfer the caller's tokens, according to `approved`,\n     *\n     * Emits an {ApprovalForAll} event.\n     *\n     * Requirements:\n     *\n     * - `operator` cannot be the caller.\n     */\n    function setApprovalForAll(address operator, bool approved) external;\n\n    /**\n     * @dev Returns true if `operator` is approved to transfer ``account``'s tokens.\n     *\n     * See {setApprovalForAll}.\n     */\n    function isApprovedForAll(address account, address operator) external view returns (bool);\n\n    /**\n     * @dev Transfers `amount` tokens of token type `id` from `from` to `to`.\n     *\n     * Emits a {TransferSingle} event.\n     *\n     * Requirements:\n     *\n     * - `to` cannot be the zero address.\n     * - If the caller is not `from`, it must be have been approved to spend ``from``'s tokens via {setApprovalForAll}.\n     * - `from` must have a balance of tokens of type `id` of at least `amount`.\n     * - If `to` refers to a smart contract, it must implement {IERC1155Receiver-onERC1155Received} and return the\n     * acceptance magic value.\n     */\n    function safeTransferFrom(\n        address from,\n        address to,\n        uint256 id,\n        uint256 amount,\n        bytes calldata data\n    ) external;\n\n    /**\n     * @dev xref:ROOT:erc1155.adoc#batch-operations[Batched] version of {safeTransferFrom}.\n     *\n     * Emits a {TransferBatch} event.\n     *\n     * Requirements:\n     *\n     * - `ids` and `amounts` must have the same length.\n     * - If `to` refers to a smart contract, it must implement {IERC1155Receiver-onERC1155BatchReceived} and return the\n     * acceptance magic value.\n     */\n    function safeBatchTransferFrom(\n        address from,\n        address to,\n        uint256[] calldata ids,\n        uint256[] calldata amounts,\n        bytes calldata data\n    ) external;\n}\n"
-    },
-    "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\nimport \"./ERC1155Receiver.sol\";\n\n/**\n * @dev _Available since v3.1._\n */\ncontract ERC1155Holder is ERC1155Receiver {\n    function onERC1155Received(\n        address,\n        address,\n        uint256,\n        uint256,\n        bytes memory\n    ) public virtual override returns (bytes4) {\n        return this.onERC1155Received.selector;\n    }\n\n    function onERC1155BatchReceived(\n        address,\n        address,\n        uint256[] memory,\n        uint256[] memory,\n        bytes memory\n    ) public virtual override returns (bytes4) {\n        return this.onERC1155BatchReceived.selector;\n    }\n}\n"
-    },
-    "@openzeppelin/contracts/utils/cryptography/ECDSA.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\n/**\n * @dev Elliptic Curve Digital Signature Algorithm (ECDSA) operations.\n *\n * These functions can be used to verify that a message was signed by the holder\n * of the private keys of a given address.\n */\nlibrary ECDSA {\n    /**\n     * @dev Returns the address that signed a hashed message (`hash`) with\n     * `signature`. This address can then be used for verification purposes.\n     *\n     * The `ecrecover` EVM opcode allows for malleable (non-unique) signatures:\n     * this function rejects them by requiring the `s` value to be in the lower\n     * half order, and the `v` value to be either 27 or 28.\n     *\n     * IMPORTANT: `hash` _must_ be the result of a hash operation for the\n     * verification to be secure: it is possible to craft signatures that\n     * recover to arbitrary addresses for non-hashed data. A safe way to ensure\n     * this is by receiving a hash of the original message (which may otherwise\n     * be too long), and then calling {toEthSignedMessageHash} on it.\n     *\n     * Documentation for signature generation:\n     * - with https://web3js.readthedocs.io/en/v1.3.4/web3-eth-accounts.html#sign[Web3.js]\n     * - with https://docs.ethers.io/v5/api/signer/#Signer-signMessage[ethers]\n     */\n    function recover(bytes32 hash, bytes memory signature) internal pure returns (address) {\n        // Check the signature length\n        // - case 65: r,s,v signature (standard)\n        // - case 64: r,vs signature (cf https://eips.ethereum.org/EIPS/eip-2098) _Available since v4.1._\n        if (signature.length == 65) {\n            bytes32 r;\n            bytes32 s;\n            uint8 v;\n            // ecrecover takes the signature parameters, and the only way to get them\n            // currently is to use assembly.\n            assembly {\n                r := mload(add(signature, 0x20))\n                s := mload(add(signature, 0x40))\n                v := byte(0, mload(add(signature, 0x60)))\n            }\n            return recover(hash, v, r, s);\n        } else if (signature.length == 64) {\n            bytes32 r;\n            bytes32 vs;\n            // ecrecover takes the signature parameters, and the only way to get them\n            // currently is to use assembly.\n            assembly {\n                r := mload(add(signature, 0x20))\n                vs := mload(add(signature, 0x40))\n            }\n            return recover(hash, r, vs);\n        } else {\n            revert(\"ECDSA: invalid signature length\");\n        }\n    }\n\n    /**\n     * @dev Overload of {ECDSA-recover} that receives the `r` and `vs` short-signature fields separately.\n     *\n     * See https://eips.ethereum.org/EIPS/eip-2098[EIP-2098 short signatures]\n     *\n     * _Available since v4.2._\n     */\n    function recover(\n        bytes32 hash,\n        bytes32 r,\n        bytes32 vs\n    ) internal pure returns (address) {\n        bytes32 s;\n        uint8 v;\n        assembly {\n            s := and(vs, 0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)\n            v := add(shr(255, vs), 27)\n        }\n        return recover(hash, v, r, s);\n    }\n\n    /**\n     * @dev Overload of {ECDSA-recover} that receives the `v`, `r` and `s` signature fields separately.\n     */\n    function recover(\n        bytes32 hash,\n        uint8 v,\n        bytes32 r,\n        bytes32 s\n    ) internal pure returns (address) {\n        // EIP-2 still allows signature malleability for ecrecover(). Remove this possibility and make the signature\n        // unique. Appendix F in the Ethereum Yellow paper (https://ethereum.github.io/yellowpaper/paper.pdf), defines\n        // the valid range for s in (281): 0 < s < secp256k1n ÷ 2 + 1, and for v in (282): v ∈ {27, 28}. Most\n        // signatures from current libraries generate a unique signature with an s-value in the lower half order.\n        //\n        // If your library generates malleable signatures, such as s-values in the upper range, calculate a new s-value\n        // with 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141 - s1 and flip v from 27 to 28 or\n        // vice versa. If your library also generates signatures with 0/1 for v instead 27/28, add 27 to v to accept\n        // these malleable signatures as well.\n        require(\n            uint256(s) <= 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0,\n            \"ECDSA: invalid signature 's' value\"\n        );\n        require(v == 27 || v == 28, \"ECDSA: invalid signature 'v' value\");\n\n        // If the signature is valid (and not malleable), return the signer address\n        address signer = ecrecover(hash, v, r, s);\n        require(signer != address(0), \"ECDSA: invalid signature\");\n\n        return signer;\n    }\n\n    /**\n     * @dev Returns an Ethereum Signed Message, created from a `hash`. This\n     * produces hash corresponding to the one signed with the\n     * https://eth.wiki/json-rpc/API#eth_sign[`eth_sign`]\n     * JSON-RPC method as part of EIP-191.\n     *\n     * See {recover}.\n     */\n    function toEthSignedMessageHash(bytes32 hash) internal pure returns (bytes32) {\n        // 32 is the length in bytes of hash,\n        // enforced by the type signature above\n        return keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", hash));\n    }\n\n    /**\n     * @dev Returns an Ethereum Signed Typed Data, created from a\n     * `domainSeparator` and a `structHash`. This produces hash corresponding\n     * to the one signed with the\n     * https://eips.ethereum.org/EIPS/eip-712[`eth_signTypedData`]\n     * JSON-RPC method as part of EIP-712.\n     *\n     * See {recover}.\n     */\n    function toTypedDataHash(bytes32 domainSeparator, bytes32 structHash) internal pure returns (bytes32) {\n        return keccak256(abi.encodePacked(\"\\x19\\x01\", domainSeparator, structHash));\n    }\n}\n"
-    },
-    "@openzeppelin/contracts/utils/Context.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\n/*\n * @dev Provides information about the current execution context, including the\n * sender of the transaction and its data. While these are generally available\n * via msg.sender and msg.data, they should not be accessed in such a direct\n * manner, since when dealing with meta-transactions the account sending and\n * paying for execution may not be the actual sender (as far as an application\n * is concerned).\n *\n * This contract is only required for intermediate, library-like contracts.\n */\nabstract contract Context {\n    function _msgSender() internal view virtual returns (address) {\n        return msg.sender;\n    }\n\n    function _msgData() internal view virtual returns (bytes calldata) {\n        return msg.data;\n    }\n}\n"
-    },
-    "@openzeppelin/contracts/utils/introspection/IERC165.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\n/**\n * @dev Interface of the ERC165 standard, as defined in the\n * https://eips.ethereum.org/EIPS/eip-165[EIP].\n *\n * Implementers can declare support of contract interfaces, which can then be\n * queried by others ({ERC165Checker}).\n *\n * For an implementation, see {ERC165}.\n */\ninterface IERC165 {\n    /**\n     * @dev Returns true if this contract implements the interface defined by\n     * `interfaceId`. See the corresponding\n     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]\n     * to learn more about how these ids are created.\n     *\n     * This function call must use less than 30 000 gas.\n     */\n    function supportsInterface(bytes4 interfaceId) external view returns (bool);\n}\n"
-    },
-    "@openzeppelin/contracts/token/ERC1155/utils/ERC1155Receiver.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\nimport \"../IERC1155Receiver.sol\";\nimport \"../../../utils/introspection/ERC165.sol\";\n\n/**\n * @dev _Available since v3.1._\n */\nabstract contract ERC1155Receiver is ERC165, IERC1155Receiver {\n    /**\n     * @dev See {IERC165-supportsInterface}.\n     */\n    function supportsInterface(bytes4 interfaceId) public view virtual override(ERC165, IERC165) returns (bool) {\n        return interfaceId == type(IERC1155Receiver).interfaceId || super.supportsInterface(interfaceId);\n    }\n}\n"
-    },
-    "@openzeppelin/contracts/token/ERC1155/IERC1155Receiver.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\nimport \"../../utils/introspection/IERC165.sol\";\n\n/**\n * @dev _Available since v3.1._\n */\ninterface IERC1155Receiver is IERC165 {\n    /**\n        @dev Handles the receipt of a single ERC1155 token type. This function is\n        called at the end of a `safeTransferFrom` after the balance has been updated.\n        To accept the transfer, this must return\n        `bytes4(keccak256(\"onERC1155Received(address,address,uint256,uint256,bytes)\"))`\n        (i.e. 0xf23a6e61, or its own function selector).\n        @param operator The address which initiated the transfer (i.e. msg.sender)\n        @param from The address which previously owned the token\n        @param id The ID of the token being transferred\n        @param value The amount of tokens being transferred\n        @param data Additional data with no specified format\n        @return `bytes4(keccak256(\"onERC1155Received(address,address,uint256,uint256,bytes)\"))` if transfer is allowed\n    */\n    function onERC1155Received(\n        address operator,\n        address from,\n        uint256 id,\n        uint256 value,\n        bytes calldata data\n    ) external returns (bytes4);\n\n    /**\n        @dev Handles the receipt of a multiple ERC1155 token types. This function\n        is called at the end of a `safeBatchTransferFrom` after the balances have\n        been updated. To accept the transfer(s), this must return\n        `bytes4(keccak256(\"onERC1155BatchReceived(address,address,uint256[],uint256[],bytes)\"))`\n        (i.e. 0xbc197c81, or its own function selector).\n        @param operator The address which initiated the batch transfer (i.e. msg.sender)\n        @param from The address which previously owned the token\n        @param ids An array containing ids of each token being transferred (order and length must match values array)\n        @param values An array containing amounts of each token being transferred (order and length must match ids array)\n        @param data Additional data with no specified format\n        @return `bytes4(keccak256(\"onERC1155BatchReceived(address,address,uint256[],uint256[],bytes)\"))` if transfer is allowed\n    */\n    function onERC1155BatchReceived(\n        address operator,\n        address from,\n        uint256[] calldata ids,\n        uint256[] calldata values,\n        bytes calldata data\n    ) external returns (bytes4);\n}\n"
-    },
-    "@openzeppelin/contracts/utils/introspection/ERC165.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n\npragma solidity ^0.8.0;\n\nimport \"./IERC165.sol\";\n\n/**\n * @dev Implementation of the {IERC165} interface.\n *\n * Contracts that want to implement ERC165 should inherit from this contract and override {supportsInterface} to check\n * for the additional interface id that will be supported. For example:\n *\n * ```solidity\n * function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {\n *     return interfaceId == type(MyInterface).interfaceId || super.supportsInterface(interfaceId);\n * }\n * ```\n *\n * Alternatively, {ERC165Storage} provides an easier to use but more expensive implementation.\n */\nabstract contract ERC165 is IERC165 {\n    /**\n     * @dev See {IERC165-supportsInterface}.\n     */\n    function supportsInterface(bytes4 interfaceId) public view virtual override returns (bool) {\n        return interfaceId == type(IERC165).interfaceId;\n    }\n}\n"
-    }
-  },
-  "settings": {
-    "optimizer": {
-      "enabled": true,
-      "runs": 500
-    },
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "devdoc",
-          "userdoc",
-          "metadata",
-          "abi"
-        ]
-      }
-    },
-    "libraries": {}
-  }
-}}
+// contracts/BobuDistributor.sol
+
+// SPDX-License-Identifier: MIT
+
+pragma solidity ^0.8.4;
+
+import '@openzeppelin/contracts/access/Ownable.sol';
+import '@openzeppelin/contracts/security/ReentrancyGuard.sol';
+import '@openzeppelin/contracts/token/ERC1155/IERC1155.sol';
+import '@openzeppelin/contracts/token/ERC1155/utils/ERC1155Holder.sol';
+import '@openzeppelin/contracts/utils/cryptography/ECDSA.sol';
+
+error Phase1SaleNotStarted();
+error Phase2SaleNotStarted();
+error MaxPhase1ClaimsReached();
+error MaxPhase2ClaimsReached();
+error InsufficientAmount();
+error CallerIsContract();
+error TransferFailed();
+error InvalidSignature();
+
+contract BobuDistributor is Ownable, ReentrancyGuard, ERC1155Holder {
+  using ECDSA for bytes32;
+
+  mapping(address => uint256) public numFractionsClaimed;
+
+  IERC1155 private immutable fractional1155;
+
+  uint256 private immutable fractionIdIn1155;
+  struct SaleDetails {
+    uint128 phase1SaleTime;
+    uint128 phase2SaleTime;
+  }
+  SaleDetails public saleDetails;
+
+  uint256 constant PRICE_FOR_ONE = 0.01 ether;
+  address private signer;
+
+  constructor(address fractional1155Address_, uint256 fractionIdIn1155_) {
+    fractional1155 = IERC1155(fractional1155Address_);
+    fractionIdIn1155 = fractionIdIn1155_;
+  }
+
+  function claimPhase1(bytes calldata _signature)
+    external
+    payable
+    callerIsUser
+  {
+    SaleDetails memory saleDetailsLoc = saleDetails;
+    if (
+      saleDetailsLoc.phase1SaleTime == 0 ||
+      block.timestamp < saleDetailsLoc.phase1SaleTime
+    ) {
+      revert Phase1SaleNotStarted();
+    }
+    if (numFractionsClaimed[msg.sender] != 0) {
+      revert MaxPhase1ClaimsReached();
+    }
+    if (msg.value < PRICE_FOR_ONE) revert InsufficientAmount();
+    if (!_verify(_signature)) revert InvalidSignature();
+
+    // It is impossible to overflow here because we restrict the number of claims
+    // per wallet to be 101.
+    unchecked {
+      numFractionsClaimed[msg.sender]++;
+    }
+
+    fractional1155.safeTransferFrom(
+      address(this),
+      msg.sender,
+      fractionIdIn1155,
+      1,
+      '0'
+    );
+  }
+
+  function claimPhase2(uint32 amount, bytes calldata _signature)
+    external
+    payable
+    callerIsUser
+  {
+    SaleDetails memory saleDetailsLoc = saleDetails;
+    if (
+      saleDetailsLoc.phase2SaleTime == 0 ||
+      block.timestamp < saleDetailsLoc.phase2SaleTime
+    ) {
+      revert Phase2SaleNotStarted();
+    }
+    if (numFractionsClaimed[msg.sender] + amount > 101) {
+      revert MaxPhase2ClaimsReached();
+    }
+    if (msg.value < (PRICE_FOR_ONE * amount)) revert InsufficientAmount();
+
+    if (!_verify(_signature)) revert InvalidSignature();
+
+    // It is impossible to overflow here because we restrict the number of claims
+    // per wallet to be 101.
+    unchecked {
+      numFractionsClaimed[msg.sender] += amount;
+    }
+
+    fractional1155.safeTransferFrom(
+      address(this),
+      msg.sender,
+      fractionIdIn1155,
+      amount,
+      '0'
+    );
+  }
+
+  function setSaleDetails(uint128 phase1SaleTime_, uint128 phase2SaleTime_)
+    external
+    onlyOwner
+  {
+    saleDetails = SaleDetails(phase1SaleTime_, phase2SaleTime_);
+  }
+
+  modifier callerIsUser() {
+    if (tx.origin != msg.sender) revert CallerIsContract();
+    _;
+  }
+
+  function withdrawMoney() external onlyOwner nonReentrant {
+    (bool success, ) = msg.sender.call{value: address(this).balance}('');
+    if (!success) revert TransferFailed();
+  }
+
+  function withdrawRemainingBobus() external onlyOwner nonReentrant {
+    fractional1155.safeTransferFrom(
+      address(this),
+      msg.sender,
+      fractionIdIn1155,
+      fractional1155.balanceOf(address(this), fractionIdIn1155),
+      '0'
+    );
+  }
+
+  function _verify(bytes memory _signature) private view returns (bool) {
+    bytes32 hashVal = keccak256(abi.encodePacked(msg.sender));
+    bytes32 signedHash = hashVal.toEthSignedMessageHash();
+    address signingAddress = signedHash.recover(_signature);
+    return signingAddress == signer;
+  }
+
+  function setSigner(address _signer) external onlyOwner {
+    signer = _signer;
+  }
+}
+
+

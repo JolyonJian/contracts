@@ -1,57 +1,251 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "contracts/__lab__/MorphsEngine.sol": {
-      "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n/*\n\n            ░░░    ░░░  ░░░░░░  ░░░░░░  ░░░░░░  ░░   ░░ ░░░░░░░\n            ▒▒▒▒  ▒▒▒▒ ▒▒    ▒▒ ▒▒   ▒▒ ▒▒   ▒▒ ▒▒   ▒▒ ▒▒\n            ▒▒ ▒▒▒▒ ▒▒ ▒▒    ▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒▒  ▒▒▒▒▒▒▒ ▒▒▒▒▒▒▒\n            ▓▓  ▓▓  ▓▓ ▓▓    ▓▓ ▓▓   ▓▓ ▓▓      ▓▓   ▓▓      ▓▓\n            ██      ██  ██████  ██   ██ ██      ██   ██ ███████\n\n                           https://morphs.wtf\n\n    Drifting through the immateria you find a scroll. You sense something\n    mysterious, cosmic.\n\n    You feel compelled to take it. After all, what have you got to lose...\n\n    Designed by @polyforms_\n\n    https://playgrounds.wtf\n    https://heyshell.xyz\n\n*/\n\nimport \"../engines/ShellBaseEngine.sol\";\nimport \"../engines/OnChainMetadataEngine.sol\";\nimport \"@openzeppelin/contracts/utils/Strings.sol\";\n\ncontract MorphsEngine is ShellBaseEngine, OnChainMetadataEngine {\n    error MintingPeriodHasEnded();\n\n    // cant mint after midnight 3/1 CST\n    uint256 public constant MINTING_ENDS_AT_TIMESTAMP = 1646114400;\n\n    function name() external pure returns (string memory) {\n        return \"morphs\";\n    }\n\n    function mint(IShellFramework collection, uint256 flag)\n        external\n        returns (uint256)\n    {\n        // solhint-disable-next-line not-rely-on-time\n        if (block.timestamp >= MINTING_ENDS_AT_TIMESTAMP) {\n            revert MintingPeriodHasEnded();\n        }\n\n        IntStorage[] memory intData;\n\n        // flag is written to token mint data if set\n        if (flag != 0) {\n            intData = new IntStorage[](1);\n            intData[0] = IntStorage({key: \"flag\", value: flag});\n        } else {\n            intData = new IntStorage[](0);\n        }\n\n        uint256 tokenId = collection.mint(\n            MintEntry({\n                to: msg.sender,\n                amount: 1,\n                options: MintOptions({\n                    storeEngine: false,\n                    storeMintedTo: false,\n                    storeTimestamp: false,\n                    storeBlockNumber: false,\n                    stringData: new StringStorage[](0),\n                    intData: intData\n                })\n            })\n        );\n\n        return tokenId;\n    }\n\n    function getPalette(uint256 tokenId) public pure returns (string memory) {\n        uint256 index = uint256(keccak256(abi.encodePacked(tokenId))) % 6;\n        return string(abi.encodePacked(\"P00\", Strings.toString(index + 1)));\n    }\n\n    function getVariation(uint256 tokenId, uint256 flag)\n        public\n        pure\n        returns (string memory)\n    {\n        if (flag >= 2) {\n            // celestial\n            // doing >= 2 to let curious geeks mint things with custom flag\n            // values.\n            // I wonder if anybody will do this? 🤔\n            return \"X001\";\n        } else if (flag == 1) {\n            // mythical\n            uint256 i = uint256(keccak256(abi.encodePacked(tokenId))) % 4;\n            return string(abi.encodePacked(\"M00\", Strings.toString(i + 1)));\n        }\n\n        // citizen\n        uint256 index = uint256(keccak256(abi.encodePacked(tokenId))) % 10;\n\n        if (index == 9) {\n            return \"C010\"; // double digit case\n        } else {\n            return string(abi.encodePacked(\"C00\", Strings.toString(index + 1)));\n        }\n    }\n\n    function getPaletteName(uint256 tokenId)\n        public\n        pure\n        returns (string memory)\n    {\n        uint256 index = uint256(keccak256(abi.encodePacked(tokenId))) % 6;\n\n        if (index == 0) {\n            return \"Greyskull\";\n        } else if (index == 1) {\n            return \"Ancient Opinions\";\n        } else if (index == 2) {\n            return \"The Desert Sun\";\n        } else if (index == 3) {\n            return \"The Deep\";\n        } else if (index == 4) {\n            return \"The Jade Prism\";\n        } else if (index == 5) {\n            return \"Cosmic Understanding\";\n        }\n\n        return \"\";\n    }\n\n    function getFlag(IShellFramework collection, uint256 tokenId)\n        public\n        view\n        returns (uint256)\n    {\n        return\n            collection.readTokenInt(StorageLocation.MINT_DATA, tokenId, \"flag\");\n    }\n\n    function _computeName(IShellFramework collection, uint256 tokenId)\n        internal\n        view\n        override\n        returns (string memory)\n    {\n        uint256 flag = getFlag(collection, tokenId);\n\n        return\n            string(\n                abi.encodePacked(\n                    \"Morph #\",\n                    Strings.toString(tokenId),\n                    flag == 2 ? \": Cosmic Scroll of \" : flag == 1\n                        ? \": Mythical Scroll of \"\n                        : \": Scroll of \",\n                    getPaletteName(tokenId)\n                )\n            );\n    }\n\n    function _computeDescription(IShellFramework collection, uint256 tokenId)\n        internal\n        view\n        override\n        returns (string memory)\n    {\n        uint256 flag = getFlag(collection, tokenId);\n\n        return\n            string(\n                abi.encodePacked(\n                    flag > 1\n                        ? \"A mysterious scroll... you feel it pulsating with cosmic energy. Its whispers speak secrets of cosmic significance.\"\n                        : flag > 0\n                        ? \"A mysterious scroll... you feel it pulsating with mythical energy. You sense its power is great.\"\n                        : \"A mysterious scroll... you feel it pulsating with energy. What secrets might it hold?\",\n                    \"\\\\n\\\\nhttps://playgrounds.wtf\"\n                )\n            );\n    }\n\n    // compute the metadata image field for a given token\n    function _computeImageUri(IShellFramework collection, uint256 tokenId)\n        internal\n        view\n        override\n        returns (string memory)\n    {\n        uint256 flag = getFlag(collection, tokenId);\n\n        string memory image = string(\n            abi.encodePacked(\n                \"S001-\",\n                getPalette(tokenId),\n                \"-\",\n                getVariation(tokenId, flag),\n                \".png\"\n            )\n        );\n\n        return\n            string(\n                abi.encodePacked(\n                    \"ipfs://ipfs/QmRCKXGuM47BzepjiHu2onshPFRWb7TMVEfd4K87cszg4w/\",\n                    image\n                )\n            );\n    }\n\n    // compute the external_url field for a given token\n    function _computeExternalUrl(IShellFramework, uint256)\n        internal\n        pure\n        override\n        returns (string memory)\n    {\n        return \"https://morphs.wtf\";\n    }\n\n    function _computeAttributes(IShellFramework collection, uint256 tokenId)\n        internal\n        view\n        override\n        returns (Attribute[] memory)\n    {\n        Attribute[] memory attributes = new Attribute[](3);\n\n        attributes[0] = Attribute({\n            key: \"Palette\",\n            value: getPaletteName(tokenId)\n        });\n\n        attributes[1] = Attribute({\n            key: \"Variation\",\n            value: getVariation(tokenId, getFlag(collection, tokenId))\n        });\n\n        uint256 flag = getFlag(collection, tokenId);\n        attributes[2] = Attribute({\n            key: \"Affinity\",\n            value: flag > 1 ? \"Cosmic\" : flag > 0 ? \"Mythical\" : \"Citizen\"\n        });\n        return attributes;\n    }\n}\n"
-    },
-    "contracts/engines/ShellBaseEngine.sol": {
-      "content": "//SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport \"@openzeppelin/contracts/interfaces/IERC165.sol\";\nimport \"../IEngine.sol\";\n\n// simple starting point for engines\n// - default name\n// - proper erc165 support\n// - no royalties\n// - nop on beforeTokenTransfer and afterEngineSet hooks\nabstract contract ShellBaseEngine is IEngine {\n\n    // nop\n    function beforeTokenTransfer(\n        address,\n        address,\n        address,\n        uint256,\n        uint256\n    ) external pure virtual override {\n        return;\n    }\n\n    // nop\n    function afterEngineSet(uint256) external view virtual override {\n        return;\n    }\n\n    // no royalties\n    function getRoyaltyInfo(\n        IShellFramework,\n        uint256,\n        uint256\n    ) external view virtual returns (address receiver, uint256 royaltyAmount) {\n        receiver = address(0);\n        royaltyAmount = 0;\n    }\n\n    function supportsInterface(bytes4 interfaceId)\n        public\n        pure\n        virtual\n        override\n        returns (bool)\n    {\n        return\n            interfaceId == type(IEngine).interfaceId ||\n            interfaceId == type(IERC165).interfaceId;\n    }\n}\n"
-    },
-    "contracts/engines/OnChainMetadataEngine.sol": {
-      "content": "//SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport \"../libraries/Base64.sol\";\nimport \"../IShellFramework.sol\";\nimport \"../IEngine.sol\";\n\nstruct Attribute {\n    string key;\n    string value;\n}\n\nabstract contract OnChainMetadataEngine is IEngine {\n    // Called by the collection to resolve a response for tokenURI\n    function getTokenURI(IShellFramework collection, uint256 tokenId)\n        external\n        view\n        returns (string memory)\n    {\n        string memory name = _computeName(collection, tokenId);\n        string memory description = _computeDescription(collection, tokenId);\n        string memory image = _computeImageUri(collection, tokenId);\n        string memory externalUrl = _computeExternalUrl(collection, tokenId);\n        Attribute[] memory attributes = _computeAttributes(collection, tokenId);\n\n        string memory attributesInnerJson = \"\";\n        for (uint256 i = 0; i < attributes.length; i++) {\n            attributesInnerJson = string(\n                bytes(\n                    abi.encodePacked(\n                        attributesInnerJson,\n                        i > 0 ? \", \" : \"\",\n                        '{\"trait_type\": \"',\n                        attributes[i].key,\n                        '\", \"value\": \"',\n                        attributes[i].value,\n                        '\"}'\n                    )\n                )\n            );\n        }\n\n        return\n            string(\n                abi.encodePacked(\n                    \"data:application/json;base64,\",\n                    Base64.encode(\n                        bytes(\n                            abi.encodePacked(\n                                '{\"name\":\"',\n                                name,\n                                '\", \"description\":\"',\n                                description,\n                                '\", \"image\": \"',\n                                image,\n                                '\", \"external_url\": \"',\n                                externalUrl,\n                                '\", \"attributes\": [',\n                                attributesInnerJson,\n                                \"]}\"\n                            )\n                        )\n                    )\n                )\n            );\n    }\n\n    // compute the metadata name for a given token\n    function _computeName(IShellFramework collection, uint256 tokenId)\n        internal\n        view\n        virtual\n        returns (string memory);\n\n    // compute the metadata description for a given token\n    function _computeDescription(IShellFramework collection, uint256 tokenId)\n        internal\n        view\n        virtual\n        returns (string memory);\n\n    // compute the metadata image field for a given token\n    function _computeImageUri(IShellFramework collection, uint256 tokenId)\n        internal\n        view\n        virtual\n        returns (string memory);\n\n    // compute the external_url field for a given token\n    function _computeExternalUrl(IShellFramework collection, uint256 tokenId)\n        internal\n        view\n        virtual\n        returns (string memory);\n\n    function _computeAttributes(IShellFramework collection, uint256 token)\n        internal\n        view\n        virtual\n        returns (Attribute[] memory);\n}\n"
-    },
-    "@openzeppelin/contracts/utils/Strings.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (utils/Strings.sol)\n\npragma solidity ^0.8.0;\n\n/**\n * @dev String operations.\n */\nlibrary Strings {\n    bytes16 private constant _HEX_SYMBOLS = \"0123456789abcdef\";\n\n    /**\n     * @dev Converts a `uint256` to its ASCII `string` decimal representation.\n     */\n    function toString(uint256 value) internal pure returns (string memory) {\n        // Inspired by OraclizeAPI's implementation - MIT licence\n        // https://github.com/oraclize/ethereum-api/blob/b42146b063c7d6ee1358846c198246239e9360e8/oraclizeAPI_0.4.25.sol\n\n        if (value == 0) {\n            return \"0\";\n        }\n        uint256 temp = value;\n        uint256 digits;\n        while (temp != 0) {\n            digits++;\n            temp /= 10;\n        }\n        bytes memory buffer = new bytes(digits);\n        while (value != 0) {\n            digits -= 1;\n            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));\n            value /= 10;\n        }\n        return string(buffer);\n    }\n\n    /**\n     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation.\n     */\n    function toHexString(uint256 value) internal pure returns (string memory) {\n        if (value == 0) {\n            return \"0x00\";\n        }\n        uint256 temp = value;\n        uint256 length = 0;\n        while (temp != 0) {\n            length++;\n            temp >>= 8;\n        }\n        return toHexString(value, length);\n    }\n\n    /**\n     * @dev Converts a `uint256` to its ASCII `string` hexadecimal representation with fixed length.\n     */\n    function toHexString(uint256 value, uint256 length) internal pure returns (string memory) {\n        bytes memory buffer = new bytes(2 * length + 2);\n        buffer[0] = \"0\";\n        buffer[1] = \"x\";\n        for (uint256 i = 2 * length + 1; i > 1; --i) {\n            buffer[i] = _HEX_SYMBOLS[value & 0xf];\n            value >>= 4;\n        }\n        require(value == 0, \"Strings: hex length insufficient\");\n        return string(buffer);\n    }\n}\n"
-    },
-    "@openzeppelin/contracts/interfaces/IERC165.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (interfaces/IERC165.sol)\n\npragma solidity ^0.8.0;\n\nimport \"../utils/introspection/IERC165.sol\";\n"
-    },
-    "contracts/IEngine.sol": {
-      "content": "//SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport \"@openzeppelin/contracts/interfaces/IERC165.sol\";\nimport \"./IShellFramework.sol\";\n\n// Required interface for framework engines\n// interfaceId = 0x0b1d171c\ninterface IEngine is IERC165 {\n    // Get the name for this engine\n    function name() external pure returns (string memory);\n\n    // Called by the framework to resolve a response for tokenURI method\n    function getTokenURI(IShellFramework collection, uint256 tokenId)\n        external\n        view\n        returns (string memory);\n\n    // Called by the framework to resolve a response for royaltyInfo method\n    function getRoyaltyInfo(\n        IShellFramework collection,\n        uint256 tokenId,\n        uint256 salePrice\n    ) external view returns (address receiver, uint256 royaltyAmount);\n\n    // Called by the framework during a transfer, including mints (from=0) and\n    // burns (to=0). Cannot break transfer even in the case of reverting, as the\n    // collection will wrap the downstream call in a try/catch\n    // collection = msg.sender\n    function beforeTokenTransfer(\n        address operator,\n        address from,\n        address to,\n        uint256 tokenId,\n        uint256 amount\n    ) external;\n\n    // Called by the framework whenever an engine is set on a fork, including\n    // the collection (fork id = 0). Can be used by engine developers to prevent\n    // an engine from being installed in a collection or non-canonical fork if\n    // desired\n    // collection = msg.sender\n    function afterEngineSet(uint256 forkId) external;\n}\n"
-    },
-    "@openzeppelin/contracts/utils/introspection/IERC165.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (utils/introspection/IERC165.sol)\n\npragma solidity ^0.8.0;\n\n/**\n * @dev Interface of the ERC165 standard, as defined in the\n * https://eips.ethereum.org/EIPS/eip-165[EIP].\n *\n * Implementers can declare support of contract interfaces, which can then be\n * queried by others ({ERC165Checker}).\n *\n * For an implementation, see {ERC165}.\n */\ninterface IERC165 {\n    /**\n     * @dev Returns true if this contract implements the interface defined by\n     * `interfaceId`. See the corresponding\n     * https://eips.ethereum.org/EIPS/eip-165#how-interfaces-are-identified[EIP section]\n     * to learn more about how these ids are created.\n     *\n     * This function call must use less than 30 000 gas.\n     */\n    function supportsInterface(bytes4 interfaceId) external view returns (bool);\n}\n"
-    },
-    "contracts/IShellFramework.sol": {
-      "content": "//SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\nimport \"@openzeppelin/contracts/interfaces/IERC165.sol\";\nimport \"@openzeppelin/contracts/interfaces/IERC2981.sol\";\nimport \"./libraries/IOwnable.sol\";\nimport \"./IEngine.sol\";\n\n// storage flag\nenum StorageLocation {\n    INVALID,\n    // set by the engine at any time, mutable\n    ENGINE,\n    // set by the engine during minting, immutable\n    MINT_DATA,\n    // set by the framework during minting or collection creation, immutable\n    FRAMEWORK\n}\n\n// string key / value\nstruct StringStorage {\n    string key;\n    string value;\n}\n\n// int key / value\nstruct IntStorage {\n    string key;\n    uint256 value;\n}\n\n// data provided when minting a new token\nstruct MintEntry {\n    address to;\n    uint256 amount;\n    MintOptions options;\n}\n\n// Data provided by engine when minting a new token\nstruct MintOptions {\n    bool storeEngine;\n    bool storeMintedTo;\n    bool storeTimestamp;\n    bool storeBlockNumber;\n    StringStorage[] stringData;\n    IntStorage[] intData;\n}\n\n// Information about a fork\nstruct Fork {\n    IEngine engine;\n    address owner;\n}\n\n// Interface for every collection launched by shell.\n// Concrete implementations must return true on ERC165 checks for this interface\n// (as well as erc165 / 2981)\n// interfaceId = TBD\ninterface IShellFramework is IERC165, IERC2981 {\n    // ---\n    // Framework errors\n    // ---\n\n    // an engine was provided that did no pass the expected erc165 checks\n    error InvalidEngine();\n\n    // a write was attempted that is not allowed\n    error WriteNotAllowed();\n\n    // an operation was attempted but msg.sender was not the expected engine\n    error SenderNotEngine();\n\n    // an operation was attempted but msg.sender was not the fork owner\n    error SenderNotForkOwner();\n\n    // a token fork was attempted by an invalid msg.sender\n    error SenderCannotFork();\n\n    // ---\n    // Framework events\n    // ---\n\n    // a fork was created\n    event ForkCreated(uint256 forkId, IEngine engine, address owner);\n\n    // a fork had a new engine installed\n    event ForkEngineUpdated(uint256 forkId, IEngine engine);\n\n    // a fork had a new owner set\n    event ForkOwnerUpdated(uint256 forkId, address owner);\n\n    // a token has been set to a new fork\n    event TokenForkUpdated(uint256 tokenId, uint256 forkId);\n\n    // ---\n    // Storage events\n    // ---\n\n    // A fork string was stored\n    event ForkStringUpdated(\n        StorageLocation location,\n        uint256 forkId,\n        string key,\n        string value\n    );\n\n    // A fork int was stored\n    event ForkIntUpdated(\n        StorageLocation location,\n        uint256 forkId,\n        string key,\n        uint256 value\n    );\n\n    // A token string was stored\n    event TokenStringUpdated(\n        StorageLocation location,\n        uint256 tokenId,\n        string key,\n        string value\n    );\n\n    // A token int was stored\n    event TokenIntUpdated(\n        StorageLocation location,\n        uint256 tokenId,\n        string key,\n        uint256 value\n    );\n\n    // ---\n    // Collection base\n    // ---\n\n    // called immediately after cloning\n    function initialize(\n        string calldata name,\n        string calldata symbol,\n        IEngine engine,\n        address owner\n    ) external;\n\n    // ---\n    // General collection info / metadata\n    // ---\n\n    // collection owner (fork 0 owner)\n    function owner() external view returns (address);\n\n    // collection name\n    function name() external view returns (string memory);\n\n    // collection name\n    function symbol() external view returns (string memory);\n\n    // next token id serial number\n    function nextTokenId() external view returns (uint256);\n\n    // next fork id serial number\n    function nextForkId() external view returns (uint256);\n\n    // ---\n    // Fork functionality\n    // ---\n\n    // Create a new fork with a specific engine, fork all the tokenIds to the\n    // new engine, and return the fork ID\n    function createFork(\n        IEngine engine,\n        address owner,\n        uint256[] calldata tokenIds\n    ) external returns (uint256);\n\n    // Set the engine for a specific fork. Must be fork owner\n    function setForkEngine(uint256 forkId, IEngine engine) external;\n\n    // Set the fork owner. Must be fork owner\n    function setForkOwner(uint256 forkId, address owner) external;\n\n    // Set the fork of a specific token. Must be token owner\n    function setTokenFork(uint256 tokenId, uint256 forkId) external;\n\n    // Set the fork for several tokens. Must own all tokens\n    function setTokenForks(uint256[] memory tokenIds, uint256 forkId) external;\n\n    // ---\n    // Fork views\n    // ---\n\n    // Get information about a fork\n    function getFork(uint256 forkId) external view returns (Fork memory);\n\n    // Get the collection / canonical engine. getFork(0).engine\n    function getForkEngine(uint256 forkId) external view returns (IEngine);\n\n    // Get a token's fork ID\n    function getTokenForkId(uint256 tokenId) external view returns (uint256);\n\n    // Get a token's engine. getFork(getTokenForkId(tokenId)).engine\n    function getTokenEngine(uint256 tokenId) external view returns (IEngine);\n\n    // Determine if a given msg.sender can fork a token\n    function canSenderForkToken(address sender, uint256 tokenId)\n        external\n        view\n        returns (bool);\n\n    // ---\n    // Engine functionality\n    // ---\n\n    // mint new tokens. Only callable by collection engine\n    function mint(MintEntry calldata entry) external returns (uint256);\n\n    // mint new tokens. Only callable by collection engine\n    function batchMint(MintEntry[] calldata entries)\n        external\n        returns (uint256[] memory);\n\n    // ---\n    // Storage writes\n    // ---\n\n    // Write a string to collection storage. Only callable by collection engine\n    function writeForkString(\n        StorageLocation location,\n        uint256 forkId,\n        string calldata key,\n        string calldata value\n    ) external;\n\n    // Write a string to collection storage. Only callable by collection engine\n    function writeForkInt(\n        StorageLocation location,\n        uint256 forkId,\n        string calldata key,\n        uint256 value\n    ) external;\n\n    // Write a string to token storage. Only callable by token engine\n    function writeTokenString(\n        StorageLocation location,\n        uint256 tokenId,\n        string calldata key,\n        string calldata value\n    ) external;\n\n    // Write a string to token storage. Only callable by token engine\n    function writeTokenInt(\n        StorageLocation location,\n        uint256 tokenId,\n        string calldata key,\n        uint256 value\n    ) external;\n\n    // ---\n    // Storage reads\n    // ---\n\n    // Read a string from collection storage\n    function readForkString(\n        StorageLocation location,\n        uint256 forkId,\n        string calldata key\n    ) external view returns (string memory);\n\n    // Read a uint256 from collection storage\n    function readForkInt(\n        StorageLocation location,\n        uint256 forkId,\n        string calldata key\n    ) external view returns (uint256);\n\n    // Read a string from token storage\n    function readTokenString(\n        StorageLocation location,\n        uint256 tokenId,\n        string calldata key\n    ) external view returns (string memory);\n\n    // Read a uint256 from token storage\n    function readTokenInt(\n        StorageLocation location,\n        uint256 tokenId,\n        string calldata key\n    ) external view returns (uint256);\n}\n"
-    },
-    "@openzeppelin/contracts/interfaces/IERC2981.sol": {
-      "content": "// SPDX-License-Identifier: MIT\n// OpenZeppelin Contracts v4.4.1 (interfaces/IERC2981.sol)\n\npragma solidity ^0.8.0;\n\nimport \"./IERC165.sol\";\n\n/**\n * @dev Interface for the NFT Royalty Standard\n */\ninterface IERC2981 is IERC165 {\n    /**\n     * @dev Called with the sale price to determine how much royalty is owed and to whom.\n     * @param tokenId - the NFT asset queried for royalty information\n     * @param salePrice - the sale price of the NFT asset specified by `tokenId`\n     * @return receiver - address of who should be sent the royalty payment\n     * @return royaltyAmount - the royalty payment amount for `salePrice`\n     */\n    function royaltyInfo(uint256 tokenId, uint256 salePrice)\n        external\n        view\n        returns (address receiver, uint256 royaltyAmount);\n}\n"
-    },
-    "contracts/libraries/IOwnable.sol": {
-      "content": "//SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n// (semi) standard ownable interface\ninterface IOwnable {\n    event OwnershipTransferred(\n        address indexed previousOwner,\n        address indexed newOwner\n    );\n\n    function owner() external view returns (address);\n\n    function renounceOwnership() external;\n\n    function transferOwnership(address newOwner) external;\n}\n"
-    },
-    "contracts/libraries/Base64.sol": {
-      "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\n// https://github.com/Brechtpd/base64/blob/main/base64.sol\n\n/// @title Base64\n/// @author Brecht Devos - <brecht@loopring.org>\n/// @notice Provides a function for encoding some bytes in base64\nlibrary Base64 {\n    string internal constant TABLE =\n        \"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/\";\n\n    function encode(bytes memory data) internal pure returns (string memory) {\n        if (data.length == 0) return \"\";\n\n        // load the table into memory\n        string memory table = TABLE;\n\n        // multiply by 4/3 rounded up\n        uint256 encodedLen = 4 * ((data.length + 2) / 3);\n\n        // add some extra buffer at the end required for the writing\n        string memory result = new string(encodedLen + 32);\n\n        assembly {\n            // set the actual output length\n            mstore(result, encodedLen)\n\n            // prepare the lookup table\n            let tablePtr := add(table, 1)\n\n            // input ptr\n            let dataPtr := data\n            let endPtr := add(dataPtr, mload(data))\n\n            // result ptr, jump over length\n            let resultPtr := add(result, 32)\n\n            // run over the input, 3 bytes at a time\n            for {\n\n            } lt(dataPtr, endPtr) {\n\n            } {\n                dataPtr := add(dataPtr, 3)\n\n                // read 3 bytes\n                let input := mload(dataPtr)\n\n                // write 4 characters\n                mstore(\n                    resultPtr,\n                    shl(248, mload(add(tablePtr, and(shr(18, input), 0x3F))))\n                )\n                resultPtr := add(resultPtr, 1)\n                mstore(\n                    resultPtr,\n                    shl(248, mload(add(tablePtr, and(shr(12, input), 0x3F))))\n                )\n                resultPtr := add(resultPtr, 1)\n                mstore(\n                    resultPtr,\n                    shl(248, mload(add(tablePtr, and(shr(6, input), 0x3F))))\n                )\n                resultPtr := add(resultPtr, 1)\n                mstore(\n                    resultPtr,\n                    shl(248, mload(add(tablePtr, and(input, 0x3F))))\n                )\n                resultPtr := add(resultPtr, 1)\n            }\n\n            // padding with '='\n            switch mod(mload(data), 3)\n            case 1 {\n                mstore(sub(resultPtr, 2), shl(240, 0x3d3d))\n            }\n            case 2 {\n                mstore(sub(resultPtr, 1), shl(248, 0x3d))\n            }\n        }\n\n        return result;\n    }\n}\n"
-    }
-  },
-  "settings": {
-    "optimizer": {
-      "enabled": true,
-      "runs": 200
-    },
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "devdoc",
-          "userdoc",
-          "metadata",
-          "abi"
-        ]
-      }
-    },
-    "libraries": {}
-  }
-}}
+// contracts/__lab__/MorphsEngine.sol
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+/*
+
+            ░░░    ░░░  ░░░░░░  ░░░░░░  ░░░░░░  ░░   ░░ ░░░░░░░
+            ▒▒▒▒  ▒▒▒▒ ▒▒    ▒▒ ▒▒   ▒▒ ▒▒   ▒▒ ▒▒   ▒▒ ▒▒
+            ▒▒ ▒▒▒▒ ▒▒ ▒▒    ▒▒ ▒▒▒▒▒▒  ▒▒▒▒▒▒  ▒▒▒▒▒▒▒ ▒▒▒▒▒▒▒
+            ▓▓  ▓▓  ▓▓ ▓▓    ▓▓ ▓▓   ▓▓ ▓▓      ▓▓   ▓▓      ▓▓
+            ██      ██  ██████  ██   ██ ██      ██   ██ ███████
+
+                           https://morphs.wtf
+
+    Drifting through the immateria you find a scroll. You sense something
+    mysterious, cosmic.
+
+    You feel compelled to take it. After all, what have you got to lose...
+
+    Designed by @polyforms_
+
+    https://playgrounds.wtf
+    https://heyshell.xyz
+
+*/
+
+import "../engines/ShellBaseEngine.sol";
+import "../engines/OnChainMetadataEngine.sol";
+import "@openzeppelin/contracts/utils/Strings.sol";
+
+contract MorphsEngine is ShellBaseEngine, OnChainMetadataEngine {
+    error MintingPeriodHasEnded();
+
+    // cant mint after midnight 3/1 CST
+    uint256 public constant MINTING_ENDS_AT_TIMESTAMP = 1646114400;
+
+    function name() external pure returns (string memory) {
+        return "morphs";
+    }
+
+    function mint(IShellFramework collection, uint256 flag)
+        external
+        returns (uint256)
+    {
+        // solhint-disable-next-line not-rely-on-time
+        if (block.timestamp >= MINTING_ENDS_AT_TIMESTAMP) {
+            revert MintingPeriodHasEnded();
+        }
+
+        IntStorage[] memory intData;
+
+        // flag is written to token mint data if set
+        if (flag != 0) {
+            intData = new IntStorage[](1);
+            intData[0] = IntStorage({key: "flag", value: flag});
+        } else {
+            intData = new IntStorage[](0);
+        }
+
+        uint256 tokenId = collection.mint(
+            MintEntry({
+                to: msg.sender,
+                amount: 1,
+                options: MintOptions({
+                    storeEngine: false,
+                    storeMintedTo: false,
+                    storeTimestamp: false,
+                    storeBlockNumber: false,
+                    stringData: new StringStorage[](0),
+                    intData: intData
+                })
+            })
+        );
+
+        return tokenId;
+    }
+
+    function getPalette(uint256 tokenId) public pure returns (string memory) {
+        uint256 index = uint256(keccak256(abi.encodePacked(tokenId))) % 6;
+        return string(abi.encodePacked("P00", Strings.toString(index + 1)));
+    }
+
+    function getVariation(uint256 tokenId, uint256 flag)
+        public
+        pure
+        returns (string memory)
+    {
+        if (flag >= 2) {
+            // celestial
+            // doing >= 2 to let curious geeks mint things with custom flag
+            // values.
+            // I wonder if anybody will do this? 🤔
+            return "X001";
+        } else if (flag == 1) {
+            // mythical
+            uint256 i = uint256(keccak256(abi.encodePacked(tokenId))) % 4;
+            return string(abi.encodePacked("M00", Strings.toString(i + 1)));
+        }
+
+        // citizen
+        uint256 index = uint256(keccak256(abi.encodePacked(tokenId))) % 10;
+
+        if (index == 9) {
+            return "C010"; // double digit case
+        } else {
+            return string(abi.encodePacked("C00", Strings.toString(index + 1)));
+        }
+    }
+
+    function getPaletteName(uint256 tokenId)
+        public
+        pure
+        returns (string memory)
+    {
+        uint256 index = uint256(keccak256(abi.encodePacked(tokenId))) % 6;
+
+        if (index == 0) {
+            return "Greyskull";
+        } else if (index == 1) {
+            return "Ancient Opinions";
+        } else if (index == 2) {
+            return "The Desert Sun";
+        } else if (index == 3) {
+            return "The Deep";
+        } else if (index == 4) {
+            return "The Jade Prism";
+        } else if (index == 5) {
+            return "Cosmic Understanding";
+        }
+
+        return "";
+    }
+
+    function getFlag(IShellFramework collection, uint256 tokenId)
+        public
+        view
+        returns (uint256)
+    {
+        return
+            collection.readTokenInt(StorageLocation.MINT_DATA, tokenId, "flag");
+    }
+
+    function _computeName(IShellFramework collection, uint256 tokenId)
+        internal
+        view
+        override
+        returns (string memory)
+    {
+        uint256 flag = getFlag(collection, tokenId);
+
+        return
+            string(
+                abi.encodePacked(
+                    "Morph #",
+                    Strings.toString(tokenId),
+                    flag == 2 ? ": Cosmic Scroll of " : flag == 1
+                        ? ": Mythical Scroll of "
+                        : ": Scroll of ",
+                    getPaletteName(tokenId)
+                )
+            );
+    }
+
+    function _computeDescription(IShellFramework collection, uint256 tokenId)
+        internal
+        view
+        override
+        returns (string memory)
+    {
+        uint256 flag = getFlag(collection, tokenId);
+
+        return
+            string(
+                abi.encodePacked(
+                    flag > 1
+                        ? "A mysterious scroll... you feel it pulsating with cosmic energy. Its whispers speak secrets of cosmic significance."
+                        : flag > 0
+                        ? "A mysterious scroll... you feel it pulsating with mythical energy. You sense its power is great."
+                        : "A mysterious scroll... you feel it pulsating with energy. What secrets might it hold?",
+                    "\\n\\nhttps://playgrounds.wtf"
+                )
+            );
+    }
+
+    // compute the metadata image field for a given token
+    function _computeImageUri(IShellFramework collection, uint256 tokenId)
+        internal
+        view
+        override
+        returns (string memory)
+    {
+        uint256 flag = getFlag(collection, tokenId);
+
+        string memory image = string(
+            abi.encodePacked(
+                "S001-",
+                getPalette(tokenId),
+                "-",
+                getVariation(tokenId, flag),
+                ".png"
+            )
+        );
+
+        return
+            string(
+                abi.encodePacked(
+                    "ipfs://ipfs/QmRCKXGuM47BzepjiHu2onshPFRWb7TMVEfd4K87cszg4w/",
+                    image
+                )
+            );
+    }
+
+    // compute the external_url field for a given token
+    function _computeExternalUrl(IShellFramework, uint256)
+        internal
+        pure
+        override
+        returns (string memory)
+    {
+        return "https://morphs.wtf";
+    }
+
+    function _computeAttributes(IShellFramework collection, uint256 tokenId)
+        internal
+        view
+        override
+        returns (Attribute[] memory)
+    {
+        Attribute[] memory attributes = new Attribute[](3);
+
+        attributes[0] = Attribute({
+            key: "Palette",
+            value: getPaletteName(tokenId)
+        });
+
+        attributes[1] = Attribute({
+            key: "Variation",
+            value: getVariation(tokenId, getFlag(collection, tokenId))
+        });
+
+        uint256 flag = getFlag(collection, tokenId);
+        attributes[2] = Attribute({
+            key: "Affinity",
+            value: flag > 1 ? "Cosmic" : flag > 0 ? "Mythical" : "Citizen"
+        });
+        return attributes;
+    }
+}
+
+

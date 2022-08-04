@@ -1,26 +1,1399 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "sOlympusERC20_flat.sol": {
-      "content": "// SPDX-License-Identifier: AGPL-3.0-or-later\n\n// File: interfaces/IStaking.sol\n\n\npragma solidity >=0.7.5;\n\ninterface IStaking {\n    function stake(\n        address _to,\n        uint256 _amount,\n        bool _rebasing,\n        bool _claim\n    ) external returns (uint256);\n\n    function claim(address _recipient, bool _rebasing) external returns (uint256);\n\n    function forfeit() external returns (uint256);\n\n    function toggleLock() external;\n\n    function unstake(\n        address _to,\n        uint256 _amount,\n        bool _trigger,\n        bool _rebasing\n    ) external returns (uint256);\n\n    function wrap(address _to, uint256 _amount) external returns (uint256 gBalance_);\n\n    function unwrap(address _to, uint256 _amount) external returns (uint256 sBalance_);\n\n    function rebase() external;\n\n    function index() external view returns (uint256);\n\n    function contractBalance() external view returns (uint256);\n\n    function totalStaked() external view returns (uint256);\n\n    function supplyInWarmup() external view returns (uint256);\n}\n\n// File: cryptography/ECDSA.sol\n\n\n\npragma solidity ^0.7.5;\n\n/**\n * @dev Elliptic Curve Digital Signature Algorithm (ECDSA) operations.\n *\n * These functions can be used to verify that a message was signed by the holder\n * of the private keys of a given address.\n */\nlibrary ECDSA {\n    enum RecoverError {\n        NoError,\n        InvalidSignature,\n        InvalidSignatureLength,\n        InvalidSignatureS,\n        InvalidSignatureV\n    }\n\n    function _throwError(RecoverError error) private pure {\n        if (error == RecoverError.NoError) {\n            return; // no error: do nothing\n        } else if (error == RecoverError.InvalidSignature) {\n            revert(\"ECDSA: invalid signature\");\n        } else if (error == RecoverError.InvalidSignatureLength) {\n            revert(\"ECDSA: invalid signature length\");\n        } else if (error == RecoverError.InvalidSignatureS) {\n            revert(\"ECDSA: invalid signature 's' value\");\n        } else if (error == RecoverError.InvalidSignatureV) {\n            revert(\"ECDSA: invalid signature 'v' value\");\n        }\n    }\n\n    /**\n     * @dev Returns the address that signed a hashed message (`hash`) with\n     * `signature` or error string. This address can then be used for verification purposes.\n     *\n     * The `ecrecover` EVM opcode allows for malleable (non-unique) signatures:\n     * this function rejects them by requiring the `s` value to be in the lower\n     * half order, and the `v` value to be either 27 or 28.\n     *\n     * IMPORTANT: `hash` _must_ be the result of a hash operation for the\n     * verification to be secure: it is possible to craft signatures that\n     * recover to arbitrary addresses for non-hashed data. A safe way to ensure\n     * this is by receiving a hash of the original message (which may otherwise\n     * be too long), and then calling {toEthSignedMessageHash} on it.\n     *\n     * Documentation for signature generation:\n     * - with https://web3js.readthedocs.io/en/v1.3.4/web3-eth-accounts.html#sign[Web3.js]\n     * - with https://docs.ethers.io/v5/api/signer/#Signer-signMessage[ethers]\n     *\n     * _Available since v4.3._\n     */\n    function tryRecover(bytes32 hash, bytes memory signature) internal pure returns (address, RecoverError) {\n        // Check the signature length\n        // - case 65: r,s,v signature (standard)\n        // - case 64: r,vs signature (cf https://eips.ethereum.org/EIPS/eip-2098) _Available since v4.1._\n        if (signature.length == 65) {\n            bytes32 r;\n            bytes32 s;\n            uint8 v;\n            // ecrecover takes the signature parameters, and the only way to get them\n            // currently is to use assembly.\n            assembly {\n                r := mload(add(signature, 0x20))\n                s := mload(add(signature, 0x40))\n                v := byte(0, mload(add(signature, 0x60)))\n            }\n            return tryRecover(hash, v, r, s);\n        } else if (signature.length == 64) {\n            bytes32 r;\n            bytes32 vs;\n            // ecrecover takes the signature parameters, and the only way to get them\n            // currently is to use assembly.\n            assembly {\n                r := mload(add(signature, 0x20))\n                vs := mload(add(signature, 0x40))\n            }\n            return tryRecover(hash, r, vs);\n        } else {\n            return (address(0), RecoverError.InvalidSignatureLength);\n        }\n    }\n\n    /**\n     * @dev Returns the address that signed a hashed message (`hash`) with\n     * `signature`. This address can then be used for verification purposes.\n     *\n     * The `ecrecover` EVM opcode allows for malleable (non-unique) signatures:\n     * this function rejects them by requiring the `s` value to be in the lower\n     * half order, and the `v` value to be either 27 or 28.\n     *\n     * IMPORTANT: `hash` _must_ be the result of a hash operation for the\n     * verification to be secure: it is possible to craft signatures that\n     * recover to arbitrary addresses for non-hashed data. A safe way to ensure\n     * this is by receiving a hash of the original message (which may otherwise\n     * be too long), and then calling {toEthSignedMessageHash} on it.\n     */\n    function recover(bytes32 hash, bytes memory signature) internal pure returns (address) {\n        (address recovered, RecoverError error) = tryRecover(hash, signature);\n        _throwError(error);\n        return recovered;\n    }\n\n    /**\n     * @dev Overload of {ECDSA-tryRecover} that receives the `r` and `vs` short-signature fields separately.\n     *\n     * See https://eips.ethereum.org/EIPS/eip-2098[EIP-2098 short signatures]\n     *\n     * _Available since v4.3._\n     */\n    function tryRecover(\n        bytes32 hash,\n        bytes32 r,\n        bytes32 vs\n    ) internal pure returns (address, RecoverError) {\n        bytes32 s;\n        uint8 v;\n        assembly {\n            s := and(vs, 0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)\n            v := add(shr(255, vs), 27)\n        }\n        return tryRecover(hash, v, r, s);\n    }\n\n    /**\n     * @dev Overload of {ECDSA-recover} that receives the `r and `vs` short-signature fields separately.\n     *\n     * _Available since v4.2._\n     */\n    function recover(\n        bytes32 hash,\n        bytes32 r,\n        bytes32 vs\n    ) internal pure returns (address) {\n        (address recovered, RecoverError error) = tryRecover(hash, r, vs);\n        _throwError(error);\n        return recovered;\n    }\n\n    /**\n     * @dev Overload of {ECDSA-tryRecover} that receives the `v`,\n     * `r` and `s` signature fields separately.\n     *\n     * _Available since v4.3._\n     */\n    function tryRecover(\n        bytes32 hash,\n        uint8 v,\n        bytes32 r,\n        bytes32 s\n    ) internal pure returns (address, RecoverError) {\n        // EIP-2 still allows signature malleability for ecrecover(). Remove this possibility and make the signature\n        // unique. Appendix F in the Ethereum Yellow paper (https://ethereum.github.io/yellowpaper/paper.pdf), defines\n        // the valid range for s in (301): 0 < s < secp256k1n ÷ 2 + 1, and for v in (302): v ∈ {27, 28}. Most\n        // signatures from current libraries generate a unique signature with an s-value in the lower half order.\n        //\n        // If your library generates malleable signatures, such as s-values in the upper range, calculate a new s-value\n        // with 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141 - s1 and flip v from 27 to 28 or\n        // vice versa. If your library also generates signatures with 0/1 for v instead 27/28, add 27 to v to accept\n        // these malleable signatures as well.\n        if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {\n            return (address(0), RecoverError.InvalidSignatureS);\n        }\n        if (v != 27 && v != 28) {\n            return (address(0), RecoverError.InvalidSignatureV);\n        }\n\n        // If the signature is valid (and not malleable), return the signer address\n        address signer = ecrecover(hash, v, r, s);\n        if (signer == address(0)) {\n            return (address(0), RecoverError.InvalidSignature);\n        }\n\n        return (signer, RecoverError.NoError);\n    }\n\n    /**\n     * @dev Overload of {ECDSA-recover} that receives the `v`,\n     * `r` and `s` signature fields separately.\n     */\n    function recover(\n        bytes32 hash,\n        uint8 v,\n        bytes32 r,\n        bytes32 s\n    ) internal pure returns (address) {\n        (address recovered, RecoverError error) = tryRecover(hash, v, r, s);\n        _throwError(error);\n        return recovered;\n    }\n\n    /**\n     * @dev Returns an Ethereum Signed Message, created from a `hash`. This\n     * produces hash corresponding to the one signed with the\n     * https://eth.wiki/json-rpc/API#eth_sign[`eth_sign`]\n     * JSON-RPC method as part of EIP-191.\n     *\n     * See {recover}.\n     */\n    function toEthSignedMessageHash(bytes32 hash) internal pure returns (bytes32) {\n        // 32 is the length in bytes of hash,\n        // enforced by the type signature above\n        return keccak256(abi.encodePacked(\"\\x19Ethereum Signed Message:\\n32\", hash));\n    }\n\n    /**\n     * @dev Returns an Ethereum Signed Typed Data, created from a\n     * `domainSeparator` and a `structHash`. This produces hash corresponding\n     * to the one signed with the\n     * https://eips.ethereum.org/EIPS/eip-712[`eth_signTypedData`]\n     * JSON-RPC method as part of EIP-712.\n     *\n     * See {recover}.\n     */\n    function toTypedDataHash(bytes32 domainSeparator, bytes32 structHash) internal pure returns (bytes32) {\n        return keccak256(abi.encodePacked(\"\\x19\\x01\", domainSeparator, structHash));\n    }\n}\n// File: cryptography/EIP712.sol\n\n\n\npragma solidity ^0.7.5;\n\n\n/**\n * @dev https://eips.ethereum.org/EIPS/eip-712[EIP 712] is a standard for hashing and signing of typed structured data.\n *\n * The encoding specified in the EIP is very generic, and such a generic implementation in Solidity is not feasible,\n * thus this contract does not implement the encoding itself. Protocols need to implement the type-specific encoding\n * they need in their contracts using a combination of `abi.encode` and `keccak256`.\n *\n * This contract implements the EIP 712 domain separator ({_domainSeparatorV4}) that is used as part of the encoding\n * scheme, and the final step of the encoding to obtain the message digest that is then signed via ECDSA\n * ({_hashTypedDataV4}).\n *\n * The implementation of the domain separator was designed to be as efficient as possible while still properly updating\n * the chain id to protect against replay attacks on an eventual fork of the chain.\n *\n * NOTE: This contract implements the version of the encoding known as \"v4\", as implemented by the JSON RPC method\n * https://docs.metamask.io/guide/signing-data.html[`eth_signTypedDataV4` in MetaMask].\n *\n * _Available since v3.4._\n */\nabstract contract EIP712 {\n    /* solhint-disable var-name-mixedcase */\n    // Cache the domain separator as an immutable value, but also store the chain id that it corresponds to, in order to\n    // invalidate the cached domain separator if the chain id changes.\n    bytes32 private immutable _CACHED_DOMAIN_SEPARATOR;\n    uint256 private immutable _CACHED_CHAIN_ID;\n\n    bytes32 private immutable _HASHED_NAME;\n    bytes32 private immutable _HASHED_VERSION;\n    bytes32 private immutable _TYPE_HASH;\n\n    /* solhint-enable var-name-mixedcase */\n\n    /**\n     * @dev Initializes the domain separator and parameter caches.\n     *\n     * The meaning of `name` and `version` is specified in\n     * https://eips.ethereum.org/EIPS/eip-712#definition-of-domainseparator[EIP 712]:\n     *\n     * - `name`: the user readable name of the signing domain, i.e. the name of the DApp or the protocol.\n     * - `version`: the current major version of the signing domain.\n     *\n     * NOTE: These parameters cannot be changed except through a xref:learn::upgrading-smart-contracts.adoc[smart\n     * contract upgrade].\n     */\n    constructor(string memory name, string memory version) {\n\n        uint256 chainID;\n        assembly {\n            chainID := chainid()\n        }\n\n        bytes32 hashedName = keccak256(bytes(name));\n        bytes32 hashedVersion = keccak256(bytes(version));\n        bytes32 typeHash = keccak256(\n            \"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)\"\n        );\n        _HASHED_NAME = hashedName;\n        _HASHED_VERSION = hashedVersion;\n        _CACHED_CHAIN_ID = chainID;\n        _CACHED_DOMAIN_SEPARATOR = _buildDomainSeparator(typeHash, hashedName, hashedVersion);\n        _TYPE_HASH = typeHash;\n    }\n\n    /**\n     * @dev Returns the domain separator for the current chain.\n     */\n    function _domainSeparatorV4() internal view returns (bytes32) {\n\n        uint256 chainID;\n        assembly {\n            chainID := chainid()\n        }\n\n        if (chainID == _CACHED_CHAIN_ID) {\n            return _CACHED_DOMAIN_SEPARATOR;\n        } else {\n            return _buildDomainSeparator(_TYPE_HASH, _HASHED_NAME, _HASHED_VERSION);\n        }\n    }\n\n    function _buildDomainSeparator(\n        bytes32 typeHash,\n        bytes32 nameHash,\n        bytes32 versionHash\n    ) private view returns (bytes32) {\n        uint256 chainID;\n        assembly {\n            chainID := chainid()\n        }\n\n        return keccak256(abi.encode(typeHash, nameHash, versionHash, chainID, address(this)));\n    }\n\n    /**\n     * @dev Given an already https://eips.ethereum.org/EIPS/eip-712#definition-of-hashstruct[hashed struct], this\n     * function returns the hash of the fully encoded EIP712 message for this domain.\n     *\n     * This hash can be used together with {ECDSA-recover} to obtain the signer of a message. For example:\n     *\n     * ```solidity\n     * bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(\n     *     keccak256(\"Mail(address to,string contents)\"),\n     *     mailTo,\n     *     keccak256(bytes(mailContents))\n     * )));\n     * address signer = ECDSA.recover(digest, signature);\n     * ```\n     */\n    function _hashTypedDataV4(bytes32 structHash) internal view virtual returns (bytes32) {\n        return ECDSA.toTypedDataHash(_domainSeparatorV4(), structHash);\n    }\n}\n// File: interfaces/IERC20.sol\n\n\npragma solidity >=0.7.5;\n\ninterface IERC20 {\n  /**\n   * @dev Returns the amount of tokens in existence.\n   */\n  function totalSupply() external view returns (uint256);\n\n  /**\n   * @dev Returns the amount of tokens owned by `account`.\n   */\n  function balanceOf(address account) external view returns (uint256);\n\n  /**\n   * @dev Moves `amount` tokens from the caller's account to `recipient`.\n   *\n   * Returns a boolean value indicating whether the operation succeeded.\n   *\n   * Emits a {Transfer} event.\n   */\n  function transfer(address recipient, uint256 amount) external returns (bool);\n\n  /**\n   * @dev Returns the remaining number of tokens that `spender` will be\n   * allowed to spend on behalf of `owner` through {transferFrom}. This is\n   * zero by default.\n   *\n   * This value changes when {approve} or {transferFrom} are called.\n   */\n  function allowance(address owner, address spender) external view returns (uint256);\n\n  /**\n   * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.\n   *\n   * Returns a boolean value indicating whether the operation succeeded.\n   *\n   * IMPORTANT: Beware that changing an allowance with this method brings the risk\n   * that someone may use both the old and the new allowance by unfortunate\n   * transaction ordering. One possible solution to mitigate this race\n   * condition is to first reduce the spender's allowance to 0 and set the\n   * desired value afterwards:\n   * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729\n   *\n   * Emits an {Approval} event.\n   */\n  function approve(address spender, uint256 amount) external returns (bool);\n\n  /**\n   * @dev Moves `amount` tokens from `sender` to `recipient` using the\n   * allowance mechanism. `amount` is then deducted from the caller's\n   * allowance.\n   *\n   * Returns a boolean value indicating whether the operation succeeded.\n   *\n   * Emits a {Transfer} event.\n   */\n  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);\n\n  /**\n   * @dev Emitted when `value` tokens are moved from one account (`from`) to\n   * another (`to`).\n   *\n   * Note that `value` may be zero.\n   */\n  event Transfer(address indexed from, address indexed to, uint256 value);\n\n  /**\n   * @dev Emitted when the allowance of a `spender` for an `owner` is set by\n   * a call to {approve}. `value` is the new allowance.\n   */\n  event Approval(address indexed owner, address indexed spender, uint256 value);\n}\n\n// File: interfaces/IsOHM.sol\n\n\npragma solidity >=0.7.5;\n\n\ninterface IsOHM is IERC20 {\n    function rebase( uint256 ohmProfit_, uint epoch_) external returns (uint256);\n\n    function circulatingSupply() external view returns (uint256);\n\n    function gonsForBalance( uint amount ) external view returns ( uint );\n\n    function balanceForGons( uint gons ) external view returns ( uint );\n\n    function index() external view returns ( uint );\n\n    function toG(uint amount) external view returns (uint);\n\n    function fromG(uint amount) external view returns (uint);\n\n     function changeDebt(\n        uint256 amount,\n        address debtor,\n        bool add\n    ) external;\n\n    function debtBalances(address _address) external view returns (uint256);\n\n}\n\n// File: interfaces/IgOHM.sol\n\n\npragma solidity >=0.7.5;\n\n\ninterface IgOHM is IERC20 {\n  function mint(address _to, uint256 _amount) external;\n\n  function burn(address _from, uint256 _amount) external;\n\n  function index() external view returns (uint256);\n\n  function balanceFrom(uint256 _amount) external view returns (uint256);\n\n  function balanceTo(uint256 _amount) external view returns (uint256);\n\n  function migrate( address _staking, address _sOHM ) external;\n}\n\n// File: interfaces/IERC20Permit.sol\n\n\npragma solidity >=0.7.5;\n\n/**\n * @dev Interface of the ERC20 Permit extension allowing approvals to be made via signatures, as defined in\n * https://eips.ethereum.org/EIPS/eip-2612[EIP-2612].\n *\n * Adds the {permit} method, which can be used to change an account's ERC20 allowance (see {IERC20-allowance}) by\n * presenting a message signed by the account. By not relying on {IERC20-approve}, the token holder account doesn't\n * need to send a transaction, and thus is not required to hold Ether at all.\n */\ninterface IERC20Permit {\n    /**\n     * @dev Sets `value` as th xe allowance of `spender` over ``owner``'s tokens,\n     * given ``owner``'s signed approval.\n     *\n     * IMPORTANT: The same issues {IERC20-approve} has related to transaction\n     * ordering also apply here.\n     *\n     * Emits an {Approval} event.\n     *\n     * Requirements:\n     *\n     * - `spender` cannot be the zero address.\n     * - `deadline` must be a timestamp in the future.\n     * - `v`, `r` and `s` must be a valid `secp256k1` signature from `owner`\n     * over the EIP712-formatted function arguments.\n     * - the signature must use ``owner``'s current nonce (see {nonces}).\n     *\n     * For more information on the signature format, see the\n     * https://eips.ethereum.org/EIPS/eip-2612#specification[relevant EIP\n     * section].\n     */\n    function permit(\n        address owner,\n        address spender,\n        uint256 value,\n        uint256 deadline,\n        uint8 v,\n        bytes32 r,\n        bytes32 s\n    ) external;\n\n    /**\n     * @dev Returns the current nonce for `owner`. This value must be\n     * included whenever a signature is generated for {permit}.\n     *\n     * Every successful call to {permit} increases ``owner``'s nonce by one. This\n     * prevents a signature from being used multiple times.\n     */\n    function nonces(address owner) external view returns (uint256);\n\n    /**\n     * @dev Returns the domain separator used in the encoding of the signature for {permit}, as defined by {EIP712}.\n     */\n    // solhint-disable-next-line func-name-mixedcase\n    function DOMAIN_SEPARATOR() external view returns (bytes32);\n}\n\n// File: libraries/SafeMath.sol\n\n\npragma solidity ^0.7.5;\n\n\n// TODO(zx): Replace all instances of SafeMath with OZ implementation\nlibrary SafeMath {\n\n    function add(uint256 a, uint256 b) internal pure returns (uint256) {\n        uint256 c = a + b;\n        require(c >= a, \"SafeMath: addition overflow\");\n\n        return c;\n    }\n\n    function sub(uint256 a, uint256 b) internal pure returns (uint256) {\n        return sub(a, b, \"SafeMath: subtraction overflow\");\n    }\n\n    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {\n        require(b <= a, errorMessage);\n        uint256 c = a - b;\n\n        return c;\n    }\n\n    function mul(uint256 a, uint256 b) internal pure returns (uint256) {\n        if (a == 0) {\n            return 0;\n        }\n\n        uint256 c = a * b;\n        require(c / a == b, \"SafeMath: multiplication overflow\");\n\n        return c;\n    }\n\n    function div(uint256 a, uint256 b) internal pure returns (uint256) {\n        return div(a, b, \"SafeMath: division by zero\");\n    }\n\n    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {\n        require(b > 0, errorMessage);\n        uint256 c = a / b;\n        assert(a == b * c + a % b); // There is no case in which this doesn't hold\n\n        return c;\n    }\n\n    // Only used in the  BondingCalculator.sol\n    function sqrrt(uint256 a) internal pure returns (uint c) {\n        if (a > 3) {\n            c = a;\n            uint b = add( div( a, 2), 1 );\n            while (b < c) {\n                c = b;\n                b = div( add( div( a, b ), b), 2 );\n            }\n        } else if (a != 0) {\n            c = 1;\n        }\n    }\n\n}\n// File: libraries/Counters.sol\n\n\npragma solidity ^0.7.5;\n\n\nlibrary Counters {\n    using SafeMath for uint256;\n\n    struct Counter {\n        // This variable should never be directly accessed by users of the library: interactions must be restricted to\n        // the library's function. As of Solidity v0.5.2, this cannot be enforced, though there is a proposal to add\n        // this feature: see https://github.com/ethereum/solidity/issues/4637\n        uint256 _value; // default: 0\n    }\n\n    function current(Counter storage counter) internal view returns (uint256) {\n        return counter._value;\n    }\n\n    function increment(Counter storage counter) internal {\n        // The {SafeMath} overflow check can be skipped here, see the comment at the top\n        counter._value += 1;\n    }\n\n    function decrement(Counter storage counter) internal {\n        counter._value = counter._value.sub(1);\n    }\n}\n// File: types/ERC20.sol\n\n\npragma solidity >=0.7.5;\n\n\n\n\nabstract contract ERC20 is IERC20 {\n\n    using SafeMath for uint256;\n\n    // TODO comment actual hash value.\n    bytes32 constant private ERC20TOKEN_ERC1820_INTERFACE_ID = keccak256( \"ERC20Token\" );\n    \n    mapping (address => uint256) internal _balances;\n\n    mapping (address => mapping (address => uint256)) internal _allowances;\n\n    uint256 internal _totalSupply;\n\n    string internal _name;\n    \n    string internal _symbol;\n    \n    uint8 internal immutable _decimals;\n\n    constructor (string memory name_, string memory symbol_, uint8 decimals_) {\n        _name = name_;\n        _symbol = symbol_;\n        _decimals = decimals_;\n    }\n\n    function name() public view returns (string memory) {\n        return _name;\n    }\n\n    function symbol() public view returns (string memory) {\n        return _symbol;\n    }\n\n    function decimals() public view virtual returns (uint8) {\n        return _decimals;\n    }\n\n    function totalSupply() public view override returns (uint256) {\n        return _totalSupply;\n    }\n\n    function balanceOf(address account) public view virtual override returns (uint256) {\n        return _balances[account];\n    }\n\n    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {\n        _transfer(msg.sender, recipient, amount);\n        return true;\n    }\n\n    function allowance(address owner, address spender) public view virtual override returns (uint256) {\n        return _allowances[owner][spender];\n    }\n\n    function approve(address spender, uint256 amount) public virtual override returns (bool) {\n        _approve(msg.sender, spender, amount);\n        return true;\n    }\n\n    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {\n        _transfer(sender, recipient, amount);\n        _approve(sender, msg.sender, _allowances[sender][msg.sender].sub(amount, \"ERC20: transfer amount exceeds allowance\"));\n        return true;\n    }\n\n    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {\n        _approve(msg.sender, spender, _allowances[msg.sender][spender].add(addedValue));\n        return true;\n    }\n\n    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {\n        _approve(msg.sender, spender, _allowances[msg.sender][spender].sub(subtractedValue, \"ERC20: decreased allowance below zero\"));\n        return true;\n    }\n\n    function _transfer(address sender, address recipient, uint256 amount) internal virtual {\n        require(sender != address(0), \"ERC20: transfer from the zero address\");\n        require(recipient != address(0), \"ERC20: transfer to the zero address\");\n\n        _beforeTokenTransfer(sender, recipient, amount);\n\n        _balances[sender] = _balances[sender].sub(amount, \"ERC20: transfer amount exceeds balance\");\n        _balances[recipient] = _balances[recipient].add(amount);\n        emit Transfer(sender, recipient, amount);\n    }\n\n    function _mint(address account, uint256 amount) internal virtual {\n        require(account != address(0), \"ERC20: mint to the zero address\");\n        _beforeTokenTransfer(address(0), account, amount);\n        _totalSupply = _totalSupply.add(amount);\n        _balances[account] = _balances[account].add(amount);\n        emit Transfer(address(0), account, amount);\n    }\n\n    function _burn(address account, uint256 amount) internal virtual {\n        require(account != address(0), \"ERC20: burn from the zero address\");\n\n        _beforeTokenTransfer(account, address(0), amount);\n\n        _balances[account] = _balances[account].sub(amount, \"ERC20: burn amount exceeds balance\");\n        _totalSupply = _totalSupply.sub(amount);\n        emit Transfer(account, address(0), amount);\n    }\n\n    function _approve(address owner, address spender, uint256 amount) internal virtual {\n        require(owner != address(0), \"ERC20: approve from the zero address\");\n        require(spender != address(0), \"ERC20: approve to the zero address\");\n\n        _allowances[owner][spender] = amount;\n        emit Approval(owner, spender, amount);\n    }\n\n  function _beforeTokenTransfer( address from_, address to_, uint256 amount_ ) internal virtual { }\n}\n\n// File: types/ERC20Permit.sol\n\n\npragma solidity >=0.7.5;\n\n\n\n\n\n\n/**\n * @dev Implementation of the ERC20 Permit extension allowing approvals to be made via signatures, as defined in\n * https://eips.ethereum.org/EIPS/eip-2612[EIP-2612].\n *\n * Adds the {permit} method, which can be used to change an account's ERC20 allowance (see {IERC20-allowance}) by\n * presenting a message signed by the account. By not relying on `{IERC20-approve}`, the token holder account doesn't\n * need to send a transaction, and thus is not required to hold Ether at all.\n *\n * _Available since v3.4._\n */\nabstract contract ERC20Permit is ERC20, IERC20Permit, EIP712 {\n    using Counters for Counters.Counter;\n\n    mapping(address => Counters.Counter) private _nonces;\n\n    // solhint-disable-next-line var-name-mixedcase\n    bytes32 private immutable _PERMIT_TYPEHASH = keccak256(\"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)\");\n\n    /**\n     * @dev Initializes the {EIP712} domain separator using the `name` parameter, and setting `version` to `\"1\"`.\n     *\n     * It's a good idea to use the same `name` that is defined as the ERC20 token name.\n     */\n    constructor(string memory name) EIP712(name, \"1\") {}\n\n    /**\n     * @dev See {IERC20Permit-permit}.\n     */\n    function permit(\n        address owner,\n        address spender,\n        uint256 value,\n        uint256 deadline,\n        uint8 v,\n        bytes32 r,\n        bytes32 s\n    ) public virtual override {\n        require(block.timestamp <= deadline, \"ERC20Permit: expired deadline\");\n\n        bytes32 structHash = keccak256(abi.encode(_PERMIT_TYPEHASH, owner, spender, value, _useNonce(owner), deadline));\n\n        bytes32 hash = _hashTypedDataV4(structHash);\n\n        address signer = ECDSA.recover(hash, v, r, s);\n        require(signer == owner, \"ERC20Permit: invalid signature\");\n\n        _approve(owner, spender, value);\n    }\n\n    /**\n     * @dev See {IERC20Permit-nonces}.\n     */\n    function nonces(address owner) public view virtual override returns (uint256) {\n        return _nonces[owner].current();\n    }\n\n    /**\n     * @dev See {IERC20Permit-DOMAIN_SEPARATOR}.\n     */\n    // solhint-disable-next-line func-name-mixedcase\n    function DOMAIN_SEPARATOR() external view override returns (bytes32) {\n        return _domainSeparatorV4();\n    }\n\n    /**\n     * @dev \"Consume a nonce\": return the current value and increment.\n     *\n     * _Available since v4.1._\n     */\n    function _useNonce(address owner) internal virtual returns (uint256 current) {\n        Counters.Counter storage nonce = _nonces[owner];\n        current = nonce.current();\n        nonce.increment();\n    }\n}\n\n// File: libraries/Address.sol\n\n\npragma solidity ^0.7.5;\n\n\n// TODO(zx): replace with OZ implementation.\nlibrary Address {\n    /**\n     * @dev Returns true if `account` is a contract.\n     *\n     * [IMPORTANT]\n     * ====\n     * It is unsafe to assume that an address for which this function returns\n     * false is an externally-owned account (EOA) and not a contract.\n     *\n     * Among others, `isContract` will return false for the following\n     * types of addresses:\n     *\n     *  - an externally-owned account\n     *  - a contract in construction\n     *  - an address where a contract will be created\n     *  - an address where a contract lived, but was destroyed\n     * ====\n     */\n    function isContract(address account) internal view returns (bool) {\n        // This method relies in extcodesize, which returns 0 for contracts in\n        // construction, since the code is only stored at the end of the\n        // constructor execution.\n\n        uint256 size;\n        // solhint-disable-next-line no-inline-assembly\n        assembly { size := extcodesize(account) }\n        return size > 0;\n    }\n\n    /**\n     * @dev Replacement for Solidity's `transfer`: sends `amount` wei to\n     * `recipient`, forwarding all available gas and reverting on errors.\n     *\n     * https://eips.ethereum.org/EIPS/eip-1884[EIP1884] increases the gas cost\n     * of certain opcodes, possibly making contracts go over the 2300 gas limit\n     * imposed by `transfer`, making them unable to receive funds via\n     * `transfer`. {sendValue} removes this limitation.\n     *\n     * https://diligence.consensys.net/posts/2019/09/stop-using-soliditys-transfer-now/[Learn more].\n     *\n     * IMPORTANT: because control is transferred to `recipient`, care must be\n     * taken to not create reentrancy vulnerabilities. Consider using\n     * {ReentrancyGuard} or the\n     * https://solidity.readthedocs.io/en/v0.5.11/security-considerations.html#use-the-checks-effects-interactions-pattern[checks-effects-interactions pattern].\n     */\n    function sendValue(address payable recipient, uint256 amount) internal {\n        require(address(this).balance >= amount, \"Address: insufficient balance\");\n\n        // solhint-disable-next-line avoid-low-level-calls, avoid-call-value\n        (bool success, ) = recipient.call{ value: amount }(\"\");\n        require(success, \"Address: unable to send value, recipient may have reverted\");\n    }\n\n    /**\n     * @dev Performs a Solidity function call using a low level `call`. A\n     * plain`call` is an unsafe replacement for a function call: use this\n     * function instead.\n     *\n     * If `target` reverts with a revert reason, it is bubbled up by this\n     * function (like regular Solidity function calls).\n     *\n     * Returns the raw returned data. To convert to the expected return value,\n     * use https://solidity.readthedocs.io/en/latest/units-and-global-variables.html?highlight=abi.decode#abi-encoding-and-decoding-functions[`abi.decode`].\n     *\n     * Requirements:\n     *\n     * - `target` must be a contract.\n     * - calling `target` with `data` must not revert.\n     *\n     * _Available since v3.1._\n     */\n    function functionCall(address target, bytes memory data) internal returns (bytes memory) {\n      return functionCall(target, data, \"Address: low-level call failed\");\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`], but with\n     * `errorMessage` as a fallback revert reason when `target` reverts.\n     *\n     * _Available since v3.1._\n     */\n    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {\n        return _functionCallWithValue(target, data, 0, errorMessage);\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],\n     * but also transferring `value` wei to `target`.\n     *\n     * Requirements:\n     *\n     * - the calling contract must have an ETH balance of at least `value`.\n     * - the called Solidity function must be `payable`.\n     *\n     * _Available since v3.1._\n     */\n    function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {\n        return functionCallWithValue(target, data, value, \"Address: low-level call with value failed\");\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCallWithValue-address-bytes-uint256-}[`functionCallWithValue`], but\n     * with `errorMessage` as a fallback revert reason when `target` reverts.\n     *\n     * _Available since v3.1._\n     */\n    // function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {\n    //     require(address(this).balance >= value, \"Address: insufficient balance for call\");\n    //     return _functionCallWithValue(target, data, value, errorMessage);\n    // }\n    function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {\n        require(address(this).balance >= value, \"Address: insufficient balance for call\");\n        require(isContract(target), \"Address: call to non-contract\");\n\n        // solhint-disable-next-line avoid-low-level-calls\n        (bool success, bytes memory returndata) = target.call{ value: value }(data);\n        return _verifyCallResult(success, returndata, errorMessage);\n    }\n\n    function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {\n        require(isContract(target), \"Address: call to non-contract\");\n\n        // solhint-disable-next-line avoid-low-level-calls\n        (bool success, bytes memory returndata) = target.call{ value: weiValue }(data);\n        if (success) {\n            return returndata;\n        } else {\n            // Look for revert reason and bubble it up if present\n            if (returndata.length > 0) {\n                // The easiest way to bubble the revert reason is using memory via assembly\n\n                // solhint-disable-next-line no-inline-assembly\n                assembly {\n                    let returndata_size := mload(returndata)\n                    revert(add(32, returndata), returndata_size)\n                }\n            } else {\n                revert(errorMessage);\n            }\n        }\n    }\n\n  /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],\n     * but performing a static call.\n     *\n     * _Available since v3.3._\n     */\n    function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {\n        return functionStaticCall(target, data, \"Address: low-level static call failed\");\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],\n     * but performing a static call.\n     *\n     * _Available since v3.3._\n     */\n    function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {\n        require(isContract(target), \"Address: static call to non-contract\");\n\n        // solhint-disable-next-line avoid-low-level-calls\n        (bool success, bytes memory returndata) = target.staticcall(data);\n        return _verifyCallResult(success, returndata, errorMessage);\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],\n     * but performing a delegate call.\n     *\n     * _Available since v3.3._\n     */\n    function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {\n        return functionDelegateCall(target, data, \"Address: low-level delegate call failed\");\n    }\n\n    /**\n     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],\n     * but performing a delegate call.\n     *\n     * _Available since v3.3._\n     */\n    function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {\n        require(isContract(target), \"Address: delegate call to non-contract\");\n\n        // solhint-disable-next-line avoid-low-level-calls\n        (bool success, bytes memory returndata) = target.delegatecall(data);\n        return _verifyCallResult(success, returndata, errorMessage);\n    }\n\n    function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {\n        if (success) {\n            return returndata;\n        } else {\n            // Look for revert reason and bubble it up if present\n            if (returndata.length > 0) {\n                // The easiest way to bubble the revert reason is using memory via assembly\n\n                // solhint-disable-next-line no-inline-assembly\n                assembly {\n                    let returndata_size := mload(returndata)\n                    revert(add(32, returndata), returndata_size)\n                }\n            } else {\n                revert(errorMessage);\n            }\n        }\n    }\n\n    function addressToString(address _address) internal pure returns(string memory) {\n        bytes32 _bytes = bytes32(uint256(_address));\n        bytes memory HEX = \"0123456789abcdef\";\n        bytes memory _addr = new bytes(42);\n\n        _addr[0] = '0';\n        _addr[1] = 'x';\n\n        for(uint256 i = 0; i < 20; i++) {\n            _addr[2+i*2] = HEX[uint8(_bytes[i + 12] >> 4)];\n            _addr[3+i*2] = HEX[uint8(_bytes[i + 12] & 0x0f)];\n        }\n\n        return string(_addr);\n\n    }\n}\n// File: sOlympusERC20.sol\n\n\npragma solidity ^0.7.5;\n\n\n\n\n\n\n\ncontract sOlympus is IsOHM, ERC20Permit {\n    /* ========== DEPENDENCIES ========== */\n\n    using SafeMath for uint256;\n\n    /* ========== EVENTS ========== */\n\n    event LogSupply(uint256 indexed epoch, uint256 totalSupply);\n    event LogRebase(uint256 indexed epoch, uint256 rebase, uint256 index);\n    event LogStakingContractUpdated(address stakingContract);\n\n    /* ========== MODIFIERS ========== */\n\n    modifier onlyStakingContract() {\n        require(msg.sender == stakingContract, \"StakingContract:  call is not staking contract\");\n        _;\n    }\n\n    /* ========== DATA STRUCTURES ========== */\n\n    struct Rebase {\n        uint256 epoch;\n        uint256 rebase; // 18 decimals\n        uint256 totalStakedBefore;\n        uint256 totalStakedAfter;\n        uint256 amountRebased;\n        uint256 index;\n        uint256 blockNumberOccured;\n    }\n\n    /* ========== STATE VARIABLES ========== */\n\n    address internal initializer;\n\n    uint256 internal INDEX; // Index Gons - tracks rebase growth\n\n    address public stakingContract; // balance used to calc rebase\n    IgOHM public gOHM; // additional staked supply (governance token)\n\n    Rebase[] public rebases; // past rebase data\n\n    uint256 private constant MAX_UINT256 = type(uint256).max;\n    uint256 private constant INITIAL_FRAGMENTS_SUPPLY = 5_000_000 * 10**9;\n\n    // TOTAL_GONS is a multiple of INITIAL_FRAGMENTS_SUPPLY so that _gonsPerFragment is an integer.\n    // Use the highest value that fits in a uint256 for max granularity.\n    uint256 private constant TOTAL_GONS = MAX_UINT256 - (MAX_UINT256 % INITIAL_FRAGMENTS_SUPPLY);\n\n    // MAX_SUPPLY = maximum integer < (sqrt(4*TOTAL_GONS + 1) - 1) / 2\n    uint256 private constant MAX_SUPPLY = ~uint128(0); // (2^128) - 1\n\n    uint256 private _gonsPerFragment;\n    mapping(address => uint256) private _gonBalances;\n\n    mapping(address => mapping(address => uint256)) private _allowedValue;\n\n    address public treasury;\n    mapping(address => uint256) public override debtBalances;\n\n    /* ========== CONSTRUCTOR ========== */\n\n    constructor() ERC20(\"Staked OHM\", \"sOHM\", 9) ERC20Permit(\"Staked OHM\") {\n        initializer = msg.sender;\n        _totalSupply = INITIAL_FRAGMENTS_SUPPLY;\n        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);\n    }\n\n    /* ========== INITIALIZATION ========== */\n\n    function setIndex(uint256 _index) external {\n        require(msg.sender == initializer, \"Initializer:  caller is not initializer\");\n        require(INDEX == 0, \"Cannot set INDEX again\");\n        INDEX = gonsForBalance(_index);\n    }\n\n    function setgOHM(address _gOHM) external {\n        require(msg.sender == initializer, \"Initializer:  caller is not initializer\");\n        require(address(gOHM) == address(0), \"gOHM:  gOHM already set\");\n        require(_gOHM != address(0), \"gOHM:  gOHM is not a valid contract\");\n        gOHM = IgOHM(_gOHM);\n    }\n\n    // do this last\n    function initialize(address _stakingContract, address _treasury) external {\n        require(msg.sender == initializer, \"Initializer:  caller is not initializer\");\n\n        require(_stakingContract != address(0), \"Staking\");\n        stakingContract = _stakingContract;\n        _gonBalances[stakingContract] = TOTAL_GONS;\n\n        require(_treasury != address(0), \"Zero address: Treasury\");\n        treasury = _treasury;\n\n        emit Transfer(address(0x0), stakingContract, _totalSupply);\n        emit LogStakingContractUpdated(stakingContract);\n\n        initializer = address(0);\n    }\n\n    /* ========== REBASE ========== */\n\n    /**\n        @notice increases rOHM supply to increase staking balances relative to profit_\n        @param profit_ uint256\n        @return uint256\n     */\n    function rebase(uint256 profit_, uint256 epoch_) public override onlyStakingContract returns (uint256) {\n        uint256 rebaseAmount;\n        uint256 circulatingSupply_ = circulatingSupply();\n        if (profit_ == 0) {\n            emit LogSupply(epoch_, _totalSupply);\n            emit LogRebase(epoch_, 0, index());\n            return _totalSupply;\n        } else if (circulatingSupply_ > 0) {\n            rebaseAmount = profit_.mul(_totalSupply).div(circulatingSupply_);\n        } else {\n            rebaseAmount = profit_;\n        }\n\n        _totalSupply = _totalSupply.add(rebaseAmount);\n\n        if (_totalSupply > MAX_SUPPLY) {\n            _totalSupply = MAX_SUPPLY;\n        }\n\n        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);\n\n        _storeRebase(circulatingSupply_, profit_, epoch_);\n\n        return _totalSupply;\n    }\n\n    /**\n        @notice emits event with data about rebase\n        @param previousCirculating_ uint\n        @param profit_ uint\n        @param epoch_ uint\n     */\n    function _storeRebase(\n        uint256 previousCirculating_,\n        uint256 profit_,\n        uint256 epoch_\n    ) internal {\n        uint256 rebasePercent = profit_.mul(1e18).div(previousCirculating_);\n        rebases.push(\n            Rebase({\n                epoch: epoch_,\n                rebase: rebasePercent, // 18 decimals\n                totalStakedBefore: previousCirculating_,\n                totalStakedAfter: circulatingSupply(),\n                amountRebased: profit_,\n                index: index(),\n                blockNumberOccured: block.number\n            })\n        );\n\n        emit LogSupply(epoch_, _totalSupply);\n        emit LogRebase(epoch_, rebasePercent, index());\n    }\n\n    /* ========== MUTATIVE FUNCTIONS =========== */\n\n    function transfer(address to, uint256 value) public override(IERC20, ERC20) returns (bool) {\n        uint256 gonValue = value.mul(_gonsPerFragment);\n\n        _gonBalances[msg.sender] = _gonBalances[msg.sender].sub(gonValue);\n        _gonBalances[to] = _gonBalances[to].add(gonValue);\n\n        require(balanceOf(msg.sender) >= debtBalances[msg.sender], \"Debt: cannot transfer amount\");\n        emit Transfer(msg.sender, to, value);\n        return true;\n    }\n\n    function transferFrom(\n        address from,\n        address to,\n        uint256 value\n    ) public override(IERC20, ERC20) returns (bool) {\n        _allowedValue[from][msg.sender] = _allowedValue[from][msg.sender].sub(value);\n        emit Approval(from, msg.sender, _allowedValue[from][msg.sender]);\n\n        uint256 gonValue = gonsForBalance(value);\n        _gonBalances[from] = _gonBalances[from].sub(gonValue);\n        _gonBalances[to] = _gonBalances[to].add(gonValue);\n\n        require(balanceOf(from) >= debtBalances[from], \"Debt: cannot transfer amount\");\n        emit Transfer(from, to, value);\n        return true;\n    }\n\n    function approve(address spender, uint256 value) public override(IERC20, ERC20) returns (bool) {\n        _approve(msg.sender, spender, value);\n        return true;\n    }\n\n    function increaseAllowance(address spender, uint256 addedValue) public override returns (bool) {\n        _approve(msg.sender, spender, _allowedValue[msg.sender][spender].add(addedValue));\n        return true;\n    }\n\n    function decreaseAllowance(address spender, uint256 subtractedValue) public override returns (bool) {\n        uint256 oldValue = _allowedValue[msg.sender][spender];\n        if (subtractedValue >= oldValue) {\n            _approve(msg.sender, spender, 0);\n        } else {\n            _approve(msg.sender, spender, oldValue.sub(subtractedValue));\n        }\n        return true;\n    }\n\n    // this function is called by the treasury, and informs sOHM of changes to debt.\n    // note that addresses with debt balances cannot transfer collateralized sOHM\n    // until the debt has been repaid.\n    function changeDebt(\n        uint256 amount,\n        address debtor,\n        bool add\n    ) external override {\n        require(msg.sender == treasury, \"Only treasury\");\n        if (add) {\n            debtBalances[debtor] = debtBalances[debtor].add(amount);\n        } else {\n            debtBalances[debtor] = debtBalances[debtor].sub(amount);\n        }\n        require(debtBalances[debtor] <= balanceOf(debtor), \"sOHM: insufficient balance\");\n    }\n\n    /* ========== INTERNAL FUNCTIONS ========== */\n\n    function _approve(\n        address owner,\n        address spender,\n        uint256 value\n    ) internal virtual override {\n        _allowedValue[owner][spender] = value;\n        emit Approval(owner, spender, value);\n    }\n\n    /* ========== VIEW FUNCTIONS ========== */\n\n    function balanceOf(address who) public view override(IERC20, ERC20) returns (uint256) {\n        return _gonBalances[who].div(_gonsPerFragment);\n    }\n\n    function gonsForBalance(uint256 amount) public view override returns (uint256) {\n        return amount.mul(_gonsPerFragment);\n    }\n\n    function balanceForGons(uint256 gons) public view override returns (uint256) {\n        return gons.div(_gonsPerFragment);\n    }\n\n    // toG converts an sOHM balance to gOHM terms. gOHM is an 18 decimal token. balance given is in 18 decimal format.\n    function toG(uint256 amount) external view override returns (uint256) {\n        return gOHM.balanceTo(amount);\n    }\n\n    // fromG converts a gOHM balance to sOHM terms. sOHM is a 9 decimal token. balance given is in 9 decimal format.\n    function fromG(uint256 amount) external view override returns (uint256) {\n        return gOHM.balanceFrom(amount);\n    }\n\n    // Staking contract holds excess sOHM\n    function circulatingSupply() public view override returns (uint256) {\n        return\n            _totalSupply.sub(balanceOf(stakingContract)).add(gOHM.balanceFrom(IERC20(address(gOHM)).totalSupply())).add(\n                IStaking(stakingContract).supplyInWarmup()\n            );\n    }\n\n    function index() public view override returns (uint256) {\n        return balanceForGons(INDEX);\n    }\n\n    function allowance(address owner_, address spender) public view override(IERC20, ERC20) returns (uint256) {\n        return _allowedValue[owner_][spender];\n    }\n}"
-    }
-  },
-  "settings": {
-    "optimizer": {
-      "enabled": false,
-      "runs": 200
-    },
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "devdoc",
-          "userdoc",
-          "metadata",
-          "abi"
-        ]
-      }
-    }
-  }
-}}
+// sOlympusERC20_flat.sol
+
+// SPDX-License-Identifier: AGPL-3.0-or-later
+
+// File: interfaces/IStaking.sol
+
+
+pragma solidity >=0.7.5;
+
+interface IStaking {
+    function stake(
+        address _to,
+        uint256 _amount,
+        bool _rebasing,
+        bool _claim
+    ) external returns (uint256);
+
+    function claim(address _recipient, bool _rebasing) external returns (uint256);
+
+    function forfeit() external returns (uint256);
+
+    function toggleLock() external;
+
+    function unstake(
+        address _to,
+        uint256 _amount,
+        bool _trigger,
+        bool _rebasing
+    ) external returns (uint256);
+
+    function wrap(address _to, uint256 _amount) external returns (uint256 gBalance_);
+
+    function unwrap(address _to, uint256 _amount) external returns (uint256 sBalance_);
+
+    function rebase() external;
+
+    function index() external view returns (uint256);
+
+    function contractBalance() external view returns (uint256);
+
+    function totalStaked() external view returns (uint256);
+
+    function supplyInWarmup() external view returns (uint256);
+}
+
+// File: cryptography/ECDSA.sol
+
+
+
+pragma solidity ^0.7.5;
+
+/**
+ * @dev Elliptic Curve Digital Signature Algorithm (ECDSA) operations.
+ *
+ * These functions can be used to verify that a message was signed by the holder
+ * of the private keys of a given address.
+ */
+library ECDSA {
+    enum RecoverError {
+        NoError,
+        InvalidSignature,
+        InvalidSignatureLength,
+        InvalidSignatureS,
+        InvalidSignatureV
+    }
+
+    function _throwError(RecoverError error) private pure {
+        if (error == RecoverError.NoError) {
+            return; // no error: do nothing
+        } else if (error == RecoverError.InvalidSignature) {
+            revert("ECDSA: invalid signature");
+        } else if (error == RecoverError.InvalidSignatureLength) {
+            revert("ECDSA: invalid signature length");
+        } else if (error == RecoverError.InvalidSignatureS) {
+            revert("ECDSA: invalid signature 's' value");
+        } else if (error == RecoverError.InvalidSignatureV) {
+            revert("ECDSA: invalid signature 'v' value");
+        }
+    }
+
+    /**
+     * @dev Returns the address that signed a hashed message (`hash`) with
+     * `signature` or error string. This address can then be used for verification purposes.
+     *
+     * The `ecrecover` EVM opcode allows for malleable (non-unique) signatures:
+     * this function rejects them by requiring the `s` value to be in the lower
+     * half order, and the `v` value to be either 27 or 28.
+     *
+     * IMPORTANT: `hash` _must_ be the result of a hash operation for the
+     * verification to be secure: it is possible to craft signatures that
+     * recover to arbitrary addresses for non-hashed data. A safe way to ensure
+     * this is by receiving a hash of the original message (which may otherwise
+     * be too long), and then calling {toEthSignedMessageHash} on it.
+     *
+     * Documentation for signature generation:
+     * - with https://web3js.readthedocs.io/en/v1.3.4/web3-eth-accounts.html#sign[Web3.js]
+     * - with https://docs.ethers.io/v5/api/signer/#Signer-signMessage[ethers]
+     *
+     * _Available since v4.3._
+     */
+    function tryRecover(bytes32 hash, bytes memory signature) internal pure returns (address, RecoverError) {
+        // Check the signature length
+        // - case 65: r,s,v signature (standard)
+        // - case 64: r,vs signature (cf https://eips.ethereum.org/EIPS/eip-2098) _Available since v4.1._
+        if (signature.length == 65) {
+            bytes32 r;
+            bytes32 s;
+            uint8 v;
+            // ecrecover takes the signature parameters, and the only way to get them
+            // currently is to use assembly.
+            assembly {
+                r := mload(add(signature, 0x20))
+                s := mload(add(signature, 0x40))
+                v := byte(0, mload(add(signature, 0x60)))
+            }
+            return tryRecover(hash, v, r, s);
+        } else if (signature.length == 64) {
+            bytes32 r;
+            bytes32 vs;
+            // ecrecover takes the signature parameters, and the only way to get them
+            // currently is to use assembly.
+            assembly {
+                r := mload(add(signature, 0x20))
+                vs := mload(add(signature, 0x40))
+            }
+            return tryRecover(hash, r, vs);
+        } else {
+            return (address(0), RecoverError.InvalidSignatureLength);
+        }
+    }
+
+    /**
+     * @dev Returns the address that signed a hashed message (`hash`) with
+     * `signature`. This address can then be used for verification purposes.
+     *
+     * The `ecrecover` EVM opcode allows for malleable (non-unique) signatures:
+     * this function rejects them by requiring the `s` value to be in the lower
+     * half order, and the `v` value to be either 27 or 28.
+     *
+     * IMPORTANT: `hash` _must_ be the result of a hash operation for the
+     * verification to be secure: it is possible to craft signatures that
+     * recover to arbitrary addresses for non-hashed data. A safe way to ensure
+     * this is by receiving a hash of the original message (which may otherwise
+     * be too long), and then calling {toEthSignedMessageHash} on it.
+     */
+    function recover(bytes32 hash, bytes memory signature) internal pure returns (address) {
+        (address recovered, RecoverError error) = tryRecover(hash, signature);
+        _throwError(error);
+        return recovered;
+    }
+
+    /**
+     * @dev Overload of {ECDSA-tryRecover} that receives the `r` and `vs` short-signature fields separately.
+     *
+     * See https://eips.ethereum.org/EIPS/eip-2098[EIP-2098 short signatures]
+     *
+     * _Available since v4.3._
+     */
+    function tryRecover(
+        bytes32 hash,
+        bytes32 r,
+        bytes32 vs
+    ) internal pure returns (address, RecoverError) {
+        bytes32 s;
+        uint8 v;
+        assembly {
+            s := and(vs, 0x7fffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff)
+            v := add(shr(255, vs), 27)
+        }
+        return tryRecover(hash, v, r, s);
+    }
+
+    /**
+     * @dev Overload of {ECDSA-recover} that receives the `r and `vs` short-signature fields separately.
+     *
+     * _Available since v4.2._
+     */
+    function recover(
+        bytes32 hash,
+        bytes32 r,
+        bytes32 vs
+    ) internal pure returns (address) {
+        (address recovered, RecoverError error) = tryRecover(hash, r, vs);
+        _throwError(error);
+        return recovered;
+    }
+
+    /**
+     * @dev Overload of {ECDSA-tryRecover} that receives the `v`,
+     * `r` and `s` signature fields separately.
+     *
+     * _Available since v4.3._
+     */
+    function tryRecover(
+        bytes32 hash,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal pure returns (address, RecoverError) {
+        // EIP-2 still allows signature malleability for ecrecover(). Remove this possibility and make the signature
+        // unique. Appendix F in the Ethereum Yellow paper (https://ethereum.github.io/yellowpaper/paper.pdf), defines
+        // the valid range for s in (301): 0 < s < secp256k1n ÷ 2 + 1, and for v in (302): v ∈ {27, 28}. Most
+        // signatures from current libraries generate a unique signature with an s-value in the lower half order.
+        //
+        // If your library generates malleable signatures, such as s-values in the upper range, calculate a new s-value
+        // with 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141 - s1 and flip v from 27 to 28 or
+        // vice versa. If your library also generates signatures with 0/1 for v instead 27/28, add 27 to v to accept
+        // these malleable signatures as well.
+        if (uint256(s) > 0x7FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF5D576E7357A4501DDFE92F46681B20A0) {
+            return (address(0), RecoverError.InvalidSignatureS);
+        }
+        if (v != 27 && v != 28) {
+            return (address(0), RecoverError.InvalidSignatureV);
+        }
+
+        // If the signature is valid (and not malleable), return the signer address
+        address signer = ecrecover(hash, v, r, s);
+        if (signer == address(0)) {
+            return (address(0), RecoverError.InvalidSignature);
+        }
+
+        return (signer, RecoverError.NoError);
+    }
+
+    /**
+     * @dev Overload of {ECDSA-recover} that receives the `v`,
+     * `r` and `s` signature fields separately.
+     */
+    function recover(
+        bytes32 hash,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) internal pure returns (address) {
+        (address recovered, RecoverError error) = tryRecover(hash, v, r, s);
+        _throwError(error);
+        return recovered;
+    }
+
+    /**
+     * @dev Returns an Ethereum Signed Message, created from a `hash`. This
+     * produces hash corresponding to the one signed with the
+     * https://eth.wiki/json-rpc/API#eth_sign[`eth_sign`]
+     * JSON-RPC method as part of EIP-191.
+     *
+     * See {recover}.
+     */
+    function toEthSignedMessageHash(bytes32 hash) internal pure returns (bytes32) {
+        // 32 is the length in bytes of hash,
+        // enforced by the type signature above
+        return keccak256(abi.encodePacked("\x19Ethereum Signed Message:\n32", hash));
+    }
+
+    /**
+     * @dev Returns an Ethereum Signed Typed Data, created from a
+     * `domainSeparator` and a `structHash`. This produces hash corresponding
+     * to the one signed with the
+     * https://eips.ethereum.org/EIPS/eip-712[`eth_signTypedData`]
+     * JSON-RPC method as part of EIP-712.
+     *
+     * See {recover}.
+     */
+    function toTypedDataHash(bytes32 domainSeparator, bytes32 structHash) internal pure returns (bytes32) {
+        return keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
+    }
+}
+// File: cryptography/EIP712.sol
+
+
+
+pragma solidity ^0.7.5;
+
+
+/**
+ * @dev https://eips.ethereum.org/EIPS/eip-712[EIP 712] is a standard for hashing and signing of typed structured data.
+ *
+ * The encoding specified in the EIP is very generic, and such a generic implementation in Solidity is not feasible,
+ * thus this contract does not implement the encoding itself. Protocols need to implement the type-specific encoding
+ * they need in their contracts using a combination of `abi.encode` and `keccak256`.
+ *
+ * This contract implements the EIP 712 domain separator ({_domainSeparatorV4}) that is used as part of the encoding
+ * scheme, and the final step of the encoding to obtain the message digest that is then signed via ECDSA
+ * ({_hashTypedDataV4}).
+ *
+ * The implementation of the domain separator was designed to be as efficient as possible while still properly updating
+ * the chain id to protect against replay attacks on an eventual fork of the chain.
+ *
+ * NOTE: This contract implements the version of the encoding known as "v4", as implemented by the JSON RPC method
+ * https://docs.metamask.io/guide/signing-data.html[`eth_signTypedDataV4` in MetaMask].
+ *
+ * _Available since v3.4._
+ */
+abstract contract EIP712 {
+    /* solhint-disable var-name-mixedcase */
+    // Cache the domain separator as an immutable value, but also store the chain id that it corresponds to, in order to
+    // invalidate the cached domain separator if the chain id changes.
+    bytes32 private immutable _CACHED_DOMAIN_SEPARATOR;
+    uint256 private immutable _CACHED_CHAIN_ID;
+
+    bytes32 private immutable _HASHED_NAME;
+    bytes32 private immutable _HASHED_VERSION;
+    bytes32 private immutable _TYPE_HASH;
+
+    /* solhint-enable var-name-mixedcase */
+
+    /**
+     * @dev Initializes the domain separator and parameter caches.
+     *
+     * The meaning of `name` and `version` is specified in
+     * https://eips.ethereum.org/EIPS/eip-712#definition-of-domainseparator[EIP 712]:
+     *
+     * - `name`: the user readable name of the signing domain, i.e. the name of the DApp or the protocol.
+     * - `version`: the current major version of the signing domain.
+     *
+     * NOTE: These parameters cannot be changed except through a xref:learn::upgrading-smart-contracts.adoc[smart
+     * contract upgrade].
+     */
+    constructor(string memory name, string memory version) {
+
+        uint256 chainID;
+        assembly {
+            chainID := chainid()
+        }
+
+        bytes32 hashedName = keccak256(bytes(name));
+        bytes32 hashedVersion = keccak256(bytes(version));
+        bytes32 typeHash = keccak256(
+            "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+        );
+        _HASHED_NAME = hashedName;
+        _HASHED_VERSION = hashedVersion;
+        _CACHED_CHAIN_ID = chainID;
+        _CACHED_DOMAIN_SEPARATOR = _buildDomainSeparator(typeHash, hashedName, hashedVersion);
+        _TYPE_HASH = typeHash;
+    }
+
+    /**
+     * @dev Returns the domain separator for the current chain.
+     */
+    function _domainSeparatorV4() internal view returns (bytes32) {
+
+        uint256 chainID;
+        assembly {
+            chainID := chainid()
+        }
+
+        if (chainID == _CACHED_CHAIN_ID) {
+            return _CACHED_DOMAIN_SEPARATOR;
+        } else {
+            return _buildDomainSeparator(_TYPE_HASH, _HASHED_NAME, _HASHED_VERSION);
+        }
+    }
+
+    function _buildDomainSeparator(
+        bytes32 typeHash,
+        bytes32 nameHash,
+        bytes32 versionHash
+    ) private view returns (bytes32) {
+        uint256 chainID;
+        assembly {
+            chainID := chainid()
+        }
+
+        return keccak256(abi.encode(typeHash, nameHash, versionHash, chainID, address(this)));
+    }
+
+    /**
+     * @dev Given an already https://eips.ethereum.org/EIPS/eip-712#definition-of-hashstruct[hashed struct], this
+     * function returns the hash of the fully encoded EIP712 message for this domain.
+     *
+     * This hash can be used together with {ECDSA-recover} to obtain the signer of a message. For example:
+     *
+     * ```solidity
+     * bytes32 digest = _hashTypedDataV4(keccak256(abi.encode(
+     *     keccak256("Mail(address to,string contents)"),
+     *     mailTo,
+     *     keccak256(bytes(mailContents))
+     * )));
+     * address signer = ECDSA.recover(digest, signature);
+     * ```
+     */
+    function _hashTypedDataV4(bytes32 structHash) internal view virtual returns (bytes32) {
+        return ECDSA.toTypedDataHash(_domainSeparatorV4(), structHash);
+    }
+}
+// File: interfaces/IERC20.sol
+
+
+pragma solidity >=0.7.5;
+
+interface IERC20 {
+  /**
+   * @dev Returns the amount of tokens in existence.
+   */
+  function totalSupply() external view returns (uint256);
+
+  /**
+   * @dev Returns the amount of tokens owned by `account`.
+   */
+  function balanceOf(address account) external view returns (uint256);
+
+  /**
+   * @dev Moves `amount` tokens from the caller's account to `recipient`.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * Emits a {Transfer} event.
+   */
+  function transfer(address recipient, uint256 amount) external returns (bool);
+
+  /**
+   * @dev Returns the remaining number of tokens that `spender` will be
+   * allowed to spend on behalf of `owner` through {transferFrom}. This is
+   * zero by default.
+   *
+   * This value changes when {approve} or {transferFrom} are called.
+   */
+  function allowance(address owner, address spender) external view returns (uint256);
+
+  /**
+   * @dev Sets `amount` as the allowance of `spender` over the caller's tokens.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * IMPORTANT: Beware that changing an allowance with this method brings the risk
+   * that someone may use both the old and the new allowance by unfortunate
+   * transaction ordering. One possible solution to mitigate this race
+   * condition is to first reduce the spender's allowance to 0 and set the
+   * desired value afterwards:
+   * https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+   *
+   * Emits an {Approval} event.
+   */
+  function approve(address spender, uint256 amount) external returns (bool);
+
+  /**
+   * @dev Moves `amount` tokens from `sender` to `recipient` using the
+   * allowance mechanism. `amount` is then deducted from the caller's
+   * allowance.
+   *
+   * Returns a boolean value indicating whether the operation succeeded.
+   *
+   * Emits a {Transfer} event.
+   */
+  function transferFrom(address sender, address recipient, uint256 amount) external returns (bool);
+
+  /**
+   * @dev Emitted when `value` tokens are moved from one account (`from`) to
+   * another (`to`).
+   *
+   * Note that `value` may be zero.
+   */
+  event Transfer(address indexed from, address indexed to, uint256 value);
+
+  /**
+   * @dev Emitted when the allowance of a `spender` for an `owner` is set by
+   * a call to {approve}. `value` is the new allowance.
+   */
+  event Approval(address indexed owner, address indexed spender, uint256 value);
+}
+
+// File: interfaces/IsOHM.sol
+
+
+pragma solidity >=0.7.5;
+
+
+interface IsOHM is IERC20 {
+    function rebase( uint256 ohmProfit_, uint epoch_) external returns (uint256);
+
+    function circulatingSupply() external view returns (uint256);
+
+    function gonsForBalance( uint amount ) external view returns ( uint );
+
+    function balanceForGons( uint gons ) external view returns ( uint );
+
+    function index() external view returns ( uint );
+
+    function toG(uint amount) external view returns (uint);
+
+    function fromG(uint amount) external view returns (uint);
+
+     function changeDebt(
+        uint256 amount,
+        address debtor,
+        bool add
+    ) external;
+
+    function debtBalances(address _address) external view returns (uint256);
+
+}
+
+// File: interfaces/IgOHM.sol
+
+
+pragma solidity >=0.7.5;
+
+
+interface IgOHM is IERC20 {
+  function mint(address _to, uint256 _amount) external;
+
+  function burn(address _from, uint256 _amount) external;
+
+  function index() external view returns (uint256);
+
+  function balanceFrom(uint256 _amount) external view returns (uint256);
+
+  function balanceTo(uint256 _amount) external view returns (uint256);
+
+  function migrate( address _staking, address _sOHM ) external;
+}
+
+// File: interfaces/IERC20Permit.sol
+
+
+pragma solidity >=0.7.5;
+
+/**
+ * @dev Interface of the ERC20 Permit extension allowing approvals to be made via signatures, as defined in
+ * https://eips.ethereum.org/EIPS/eip-2612[EIP-2612].
+ *
+ * Adds the {permit} method, which can be used to change an account's ERC20 allowance (see {IERC20-allowance}) by
+ * presenting a message signed by the account. By not relying on {IERC20-approve}, the token holder account doesn't
+ * need to send a transaction, and thus is not required to hold Ether at all.
+ */
+interface IERC20Permit {
+    /**
+     * @dev Sets `value` as th xe allowance of `spender` over ``owner``'s tokens,
+     * given ``owner``'s signed approval.
+     *
+     * IMPORTANT: The same issues {IERC20-approve} has related to transaction
+     * ordering also apply here.
+     *
+     * Emits an {Approval} event.
+     *
+     * Requirements:
+     *
+     * - `spender` cannot be the zero address.
+     * - `deadline` must be a timestamp in the future.
+     * - `v`, `r` and `s` must be a valid `secp256k1` signature from `owner`
+     * over the EIP712-formatted function arguments.
+     * - the signature must use ``owner``'s current nonce (see {nonces}).
+     *
+     * For more information on the signature format, see the
+     * https://eips.ethereum.org/EIPS/eip-2612#specification[relevant EIP
+     * section].
+     */
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) external;
+
+    /**
+     * @dev Returns the current nonce for `owner`. This value must be
+     * included whenever a signature is generated for {permit}.
+     *
+     * Every successful call to {permit} increases ``owner``'s nonce by one. This
+     * prevents a signature from being used multiple times.
+     */
+    function nonces(address owner) external view returns (uint256);
+
+    /**
+     * @dev Returns the domain separator used in the encoding of the signature for {permit}, as defined by {EIP712}.
+     */
+    // solhint-disable-next-line func-name-mixedcase
+    function DOMAIN_SEPARATOR() external view returns (bytes32);
+}
+
+// File: libraries/SafeMath.sol
+
+
+pragma solidity ^0.7.5;
+
+
+// TODO(zx): Replace all instances of SafeMath with OZ implementation
+library SafeMath {
+
+    function add(uint256 a, uint256 b) internal pure returns (uint256) {
+        uint256 c = a + b;
+        require(c >= a, "SafeMath: addition overflow");
+
+        return c;
+    }
+
+    function sub(uint256 a, uint256 b) internal pure returns (uint256) {
+        return sub(a, b, "SafeMath: subtraction overflow");
+    }
+
+    function sub(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b <= a, errorMessage);
+        uint256 c = a - b;
+
+        return c;
+    }
+
+    function mul(uint256 a, uint256 b) internal pure returns (uint256) {
+        if (a == 0) {
+            return 0;
+        }
+
+        uint256 c = a * b;
+        require(c / a == b, "SafeMath: multiplication overflow");
+
+        return c;
+    }
+
+    function div(uint256 a, uint256 b) internal pure returns (uint256) {
+        return div(a, b, "SafeMath: division by zero");
+    }
+
+    function div(uint256 a, uint256 b, string memory errorMessage) internal pure returns (uint256) {
+        require(b > 0, errorMessage);
+        uint256 c = a / b;
+        assert(a == b * c + a % b); // There is no case in which this doesn't hold
+
+        return c;
+    }
+
+    // Only used in the  BondingCalculator.sol
+    function sqrrt(uint256 a) internal pure returns (uint c) {
+        if (a > 3) {
+            c = a;
+            uint b = add( div( a, 2), 1 );
+            while (b < c) {
+                c = b;
+                b = div( add( div( a, b ), b), 2 );
+            }
+        } else if (a != 0) {
+            c = 1;
+        }
+    }
+
+}
+// File: libraries/Counters.sol
+
+
+pragma solidity ^0.7.5;
+
+
+library Counters {
+    using SafeMath for uint256;
+
+    struct Counter {
+        // This variable should never be directly accessed by users of the library: interactions must be restricted to
+        // the library's function. As of Solidity v0.5.2, this cannot be enforced, though there is a proposal to add
+        // this feature: see https://github.com/ethereum/solidity/issues/4637
+        uint256 _value; // default: 0
+    }
+
+    function current(Counter storage counter) internal view returns (uint256) {
+        return counter._value;
+    }
+
+    function increment(Counter storage counter) internal {
+        // The {SafeMath} overflow check can be skipped here, see the comment at the top
+        counter._value += 1;
+    }
+
+    function decrement(Counter storage counter) internal {
+        counter._value = counter._value.sub(1);
+    }
+}
+// File: types/ERC20.sol
+
+
+pragma solidity >=0.7.5;
+
+
+
+
+abstract contract ERC20 is IERC20 {
+
+    using SafeMath for uint256;
+
+    // TODO comment actual hash value.
+    bytes32 constant private ERC20TOKEN_ERC1820_INTERFACE_ID = keccak256( "ERC20Token" );
+    
+    mapping (address => uint256) internal _balances;
+
+    mapping (address => mapping (address => uint256)) internal _allowances;
+
+    uint256 internal _totalSupply;
+
+    string internal _name;
+    
+    string internal _symbol;
+    
+    uint8 internal immutable _decimals;
+
+    constructor (string memory name_, string memory symbol_, uint8 decimals_) {
+        _name = name_;
+        _symbol = symbol_;
+        _decimals = decimals_;
+    }
+
+    function name() public view returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public view returns (string memory) {
+        return _symbol;
+    }
+
+    function decimals() public view virtual returns (uint8) {
+        return _decimals;
+    }
+
+    function totalSupply() public view override returns (uint256) {
+        return _totalSupply;
+    }
+
+    function balanceOf(address account) public view virtual override returns (uint256) {
+        return _balances[account];
+    }
+
+    function transfer(address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(msg.sender, recipient, amount);
+        return true;
+    }
+
+    function allowance(address owner, address spender) public view virtual override returns (uint256) {
+        return _allowances[owner][spender];
+    }
+
+    function approve(address spender, uint256 amount) public virtual override returns (bool) {
+        _approve(msg.sender, spender, amount);
+        return true;
+    }
+
+    function transferFrom(address sender, address recipient, uint256 amount) public virtual override returns (bool) {
+        _transfer(sender, recipient, amount);
+        _approve(sender, msg.sender, _allowances[sender][msg.sender].sub(amount, "ERC20: transfer amount exceeds allowance"));
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public virtual returns (bool) {
+        _approve(msg.sender, spender, _allowances[msg.sender][spender].add(addedValue));
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public virtual returns (bool) {
+        _approve(msg.sender, spender, _allowances[msg.sender][spender].sub(subtractedValue, "ERC20: decreased allowance below zero"));
+        return true;
+    }
+
+    function _transfer(address sender, address recipient, uint256 amount) internal virtual {
+        require(sender != address(0), "ERC20: transfer from the zero address");
+        require(recipient != address(0), "ERC20: transfer to the zero address");
+
+        _beforeTokenTransfer(sender, recipient, amount);
+
+        _balances[sender] = _balances[sender].sub(amount, "ERC20: transfer amount exceeds balance");
+        _balances[recipient] = _balances[recipient].add(amount);
+        emit Transfer(sender, recipient, amount);
+    }
+
+    function _mint(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: mint to the zero address");
+        _beforeTokenTransfer(address(0), account, amount);
+        _totalSupply = _totalSupply.add(amount);
+        _balances[account] = _balances[account].add(amount);
+        emit Transfer(address(0), account, amount);
+    }
+
+    function _burn(address account, uint256 amount) internal virtual {
+        require(account != address(0), "ERC20: burn from the zero address");
+
+        _beforeTokenTransfer(account, address(0), amount);
+
+        _balances[account] = _balances[account].sub(amount, "ERC20: burn amount exceeds balance");
+        _totalSupply = _totalSupply.sub(amount);
+        emit Transfer(account, address(0), amount);
+    }
+
+    function _approve(address owner, address spender, uint256 amount) internal virtual {
+        require(owner != address(0), "ERC20: approve from the zero address");
+        require(spender != address(0), "ERC20: approve to the zero address");
+
+        _allowances[owner][spender] = amount;
+        emit Approval(owner, spender, amount);
+    }
+
+  function _beforeTokenTransfer( address from_, address to_, uint256 amount_ ) internal virtual { }
+}
+
+// File: types/ERC20Permit.sol
+
+
+pragma solidity >=0.7.5;
+
+
+
+
+
+
+/**
+ * @dev Implementation of the ERC20 Permit extension allowing approvals to be made via signatures, as defined in
+ * https://eips.ethereum.org/EIPS/eip-2612[EIP-2612].
+ *
+ * Adds the {permit} method, which can be used to change an account's ERC20 allowance (see {IERC20-allowance}) by
+ * presenting a message signed by the account. By not relying on `{IERC20-approve}`, the token holder account doesn't
+ * need to send a transaction, and thus is not required to hold Ether at all.
+ *
+ * _Available since v3.4._
+ */
+abstract contract ERC20Permit is ERC20, IERC20Permit, EIP712 {
+    using Counters for Counters.Counter;
+
+    mapping(address => Counters.Counter) private _nonces;
+
+    // solhint-disable-next-line var-name-mixedcase
+    bytes32 private immutable _PERMIT_TYPEHASH = keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)");
+
+    /**
+     * @dev Initializes the {EIP712} domain separator using the `name` parameter, and setting `version` to `"1"`.
+     *
+     * It's a good idea to use the same `name` that is defined as the ERC20 token name.
+     */
+    constructor(string memory name) EIP712(name, "1") {}
+
+    /**
+     * @dev See {IERC20Permit-permit}.
+     */
+    function permit(
+        address owner,
+        address spender,
+        uint256 value,
+        uint256 deadline,
+        uint8 v,
+        bytes32 r,
+        bytes32 s
+    ) public virtual override {
+        require(block.timestamp <= deadline, "ERC20Permit: expired deadline");
+
+        bytes32 structHash = keccak256(abi.encode(_PERMIT_TYPEHASH, owner, spender, value, _useNonce(owner), deadline));
+
+        bytes32 hash = _hashTypedDataV4(structHash);
+
+        address signer = ECDSA.recover(hash, v, r, s);
+        require(signer == owner, "ERC20Permit: invalid signature");
+
+        _approve(owner, spender, value);
+    }
+
+    /**
+     * @dev See {IERC20Permit-nonces}.
+     */
+    function nonces(address owner) public view virtual override returns (uint256) {
+        return _nonces[owner].current();
+    }
+
+    /**
+     * @dev See {IERC20Permit-DOMAIN_SEPARATOR}.
+     */
+    // solhint-disable-next-line func-name-mixedcase
+    function DOMAIN_SEPARATOR() external view override returns (bytes32) {
+        return _domainSeparatorV4();
+    }
+
+    /**
+     * @dev "Consume a nonce": return the current value and increment.
+     *
+     * _Available since v4.1._
+     */
+    function _useNonce(address owner) internal virtual returns (uint256 current) {
+        Counters.Counter storage nonce = _nonces[owner];
+        current = nonce.current();
+        nonce.increment();
+    }
+}
+
+// File: libraries/Address.sol
+
+
+pragma solidity ^0.7.5;
+
+
+// TODO(zx): replace with OZ implementation.
+library Address {
+    /**
+     * @dev Returns true if `account` is a contract.
+     *
+     * [IMPORTANT]
+     * ====
+     * It is unsafe to assume that an address for which this function returns
+     * false is an externally-owned account (EOA) and not a contract.
+     *
+     * Among others, `isContract` will return false for the following
+     * types of addresses:
+     *
+     *  - an externally-owned account
+     *  - a contract in construction
+     *  - an address where a contract will be created
+     *  - an address where a contract lived, but was destroyed
+     * ====
+     */
+    function isContract(address account) internal view returns (bool) {
+        // This method relies in extcodesize, which returns 0 for contracts in
+        // construction, since the code is only stored at the end of the
+        // constructor execution.
+
+        uint256 size;
+        // solhint-disable-next-line no-inline-assembly
+        assembly { size := extcodesize(account) }
+        return size > 0;
+    }
+
+    /**
+     * @dev Replacement for Solidity's `transfer`: sends `amount` wei to
+     * `recipient`, forwarding all available gas and reverting on errors.
+     *
+     * https://eips.ethereum.org/EIPS/eip-1884[EIP1884] increases the gas cost
+     * of certain opcodes, possibly making contracts go over the 2300 gas limit
+     * imposed by `transfer`, making them unable to receive funds via
+     * `transfer`. {sendValue} removes this limitation.
+     *
+     * https://diligence.consensys.net/posts/2019/09/stop-using-soliditys-transfer-now/[Learn more].
+     *
+     * IMPORTANT: because control is transferred to `recipient`, care must be
+     * taken to not create reentrancy vulnerabilities. Consider using
+     * {ReentrancyGuard} or the
+     * https://solidity.readthedocs.io/en/v0.5.11/security-considerations.html#use-the-checks-effects-interactions-pattern[checks-effects-interactions pattern].
+     */
+    function sendValue(address payable recipient, uint256 amount) internal {
+        require(address(this).balance >= amount, "Address: insufficient balance");
+
+        // solhint-disable-next-line avoid-low-level-calls, avoid-call-value
+        (bool success, ) = recipient.call{ value: amount }("");
+        require(success, "Address: unable to send value, recipient may have reverted");
+    }
+
+    /**
+     * @dev Performs a Solidity function call using a low level `call`. A
+     * plain`call` is an unsafe replacement for a function call: use this
+     * function instead.
+     *
+     * If `target` reverts with a revert reason, it is bubbled up by this
+     * function (like regular Solidity function calls).
+     *
+     * Returns the raw returned data. To convert to the expected return value,
+     * use https://solidity.readthedocs.io/en/latest/units-and-global-variables.html?highlight=abi.decode#abi-encoding-and-decoding-functions[`abi.decode`].
+     *
+     * Requirements:
+     *
+     * - `target` must be a contract.
+     * - calling `target` with `data` must not revert.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(address target, bytes memory data) internal returns (bytes memory) {
+      return functionCall(target, data, "Address: low-level call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`], but with
+     * `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    function functionCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        return _functionCallWithValue(target, data, 0, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but also transferring `value` wei to `target`.
+     *
+     * Requirements:
+     *
+     * - the calling contract must have an ETH balance of at least `value`.
+     * - the called Solidity function must be `payable`.
+     *
+     * _Available since v3.1._
+     */
+    function functionCallWithValue(address target, bytes memory data, uint256 value) internal returns (bytes memory) {
+        return functionCallWithValue(target, data, value, "Address: low-level call with value failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCallWithValue-address-bytes-uint256-}[`functionCallWithValue`], but
+     * with `errorMessage` as a fallback revert reason when `target` reverts.
+     *
+     * _Available since v3.1._
+     */
+    // function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+    //     require(address(this).balance >= value, "Address: insufficient balance for call");
+    //     return _functionCallWithValue(target, data, value, errorMessage);
+    // }
+    function functionCallWithValue(address target, bytes memory data, uint256 value, string memory errorMessage) internal returns (bytes memory) {
+        require(address(this).balance >= value, "Address: insufficient balance for call");
+        require(isContract(target), "Address: call to non-contract");
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = target.call{ value: value }(data);
+        return _verifyCallResult(success, returndata, errorMessage);
+    }
+
+    function _functionCallWithValue(address target, bytes memory data, uint256 weiValue, string memory errorMessage) private returns (bytes memory) {
+        require(isContract(target), "Address: call to non-contract");
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = target.call{ value: weiValue }(data);
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+
+                // solhint-disable-next-line no-inline-assembly
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+
+  /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(address target, bytes memory data) internal view returns (bytes memory) {
+        return functionStaticCall(target, data, "Address: low-level static call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a static call.
+     *
+     * _Available since v3.3._
+     */
+    function functionStaticCall(address target, bytes memory data, string memory errorMessage) internal view returns (bytes memory) {
+        require(isContract(target), "Address: static call to non-contract");
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = target.staticcall(data);
+        return _verifyCallResult(success, returndata, errorMessage);
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.3._
+     */
+    function functionDelegateCall(address target, bytes memory data) internal returns (bytes memory) {
+        return functionDelegateCall(target, data, "Address: low-level delegate call failed");
+    }
+
+    /**
+     * @dev Same as {xref-Address-functionCall-address-bytes-string-}[`functionCall`],
+     * but performing a delegate call.
+     *
+     * _Available since v3.3._
+     */
+    function functionDelegateCall(address target, bytes memory data, string memory errorMessage) internal returns (bytes memory) {
+        require(isContract(target), "Address: delegate call to non-contract");
+
+        // solhint-disable-next-line avoid-low-level-calls
+        (bool success, bytes memory returndata) = target.delegatecall(data);
+        return _verifyCallResult(success, returndata, errorMessage);
+    }
+
+    function _verifyCallResult(bool success, bytes memory returndata, string memory errorMessage) private pure returns(bytes memory) {
+        if (success) {
+            return returndata;
+        } else {
+            // Look for revert reason and bubble it up if present
+            if (returndata.length > 0) {
+                // The easiest way to bubble the revert reason is using memory via assembly
+
+                // solhint-disable-next-line no-inline-assembly
+                assembly {
+                    let returndata_size := mload(returndata)
+                    revert(add(32, returndata), returndata_size)
+                }
+            } else {
+                revert(errorMessage);
+            }
+        }
+    }
+
+    function addressToString(address _address) internal pure returns(string memory) {
+        bytes32 _bytes = bytes32(uint256(_address));
+        bytes memory HEX = "0123456789abcdef";
+        bytes memory _addr = new bytes(42);
+
+        _addr[0] = '0';
+        _addr[1] = 'x';
+
+        for(uint256 i = 0; i < 20; i++) {
+            _addr[2+i*2] = HEX[uint8(_bytes[i + 12] >> 4)];
+            _addr[3+i*2] = HEX[uint8(_bytes[i + 12] & 0x0f)];
+        }
+
+        return string(_addr);
+
+    }
+}
+// File: sOlympusERC20.sol
+
+
+pragma solidity ^0.7.5;
+
+
+
+
+
+
+
+contract sOlympus is IsOHM, ERC20Permit {
+    /* ========== DEPENDENCIES ========== */
+
+    using SafeMath for uint256;
+
+    /* ========== EVENTS ========== */
+
+    event LogSupply(uint256 indexed epoch, uint256 totalSupply);
+    event LogRebase(uint256 indexed epoch, uint256 rebase, uint256 index);
+    event LogStakingContractUpdated(address stakingContract);
+
+    /* ========== MODIFIERS ========== */
+
+    modifier onlyStakingContract() {
+        require(msg.sender == stakingContract, "StakingContract:  call is not staking contract");
+        _;
+    }
+
+    /* ========== DATA STRUCTURES ========== */
+
+    struct Rebase {
+        uint256 epoch;
+        uint256 rebase; // 18 decimals
+        uint256 totalStakedBefore;
+        uint256 totalStakedAfter;
+        uint256 amountRebased;
+        uint256 index;
+        uint256 blockNumberOccured;
+    }
+
+    /* ========== STATE VARIABLES ========== */
+
+    address internal initializer;
+
+    uint256 internal INDEX; // Index Gons - tracks rebase growth
+
+    address public stakingContract; // balance used to calc rebase
+    IgOHM public gOHM; // additional staked supply (governance token)
+
+    Rebase[] public rebases; // past rebase data
+
+    uint256 private constant MAX_UINT256 = type(uint256).max;
+    uint256 private constant INITIAL_FRAGMENTS_SUPPLY = 5_000_000 * 10**9;
+
+    // TOTAL_GONS is a multiple of INITIAL_FRAGMENTS_SUPPLY so that _gonsPerFragment is an integer.
+    // Use the highest value that fits in a uint256 for max granularity.
+    uint256 private constant TOTAL_GONS = MAX_UINT256 - (MAX_UINT256 % INITIAL_FRAGMENTS_SUPPLY);
+
+    // MAX_SUPPLY = maximum integer < (sqrt(4*TOTAL_GONS + 1) - 1) / 2
+    uint256 private constant MAX_SUPPLY = ~uint128(0); // (2^128) - 1
+
+    uint256 private _gonsPerFragment;
+    mapping(address => uint256) private _gonBalances;
+
+    mapping(address => mapping(address => uint256)) private _allowedValue;
+
+    address public treasury;
+    mapping(address => uint256) public override debtBalances;
+
+    /* ========== CONSTRUCTOR ========== */
+
+    constructor() ERC20("Staked OHM", "sOHM", 9) ERC20Permit("Staked OHM") {
+        initializer = msg.sender;
+        _totalSupply = INITIAL_FRAGMENTS_SUPPLY;
+        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
+    }
+
+    /* ========== INITIALIZATION ========== */
+
+    function setIndex(uint256 _index) external {
+        require(msg.sender == initializer, "Initializer:  caller is not initializer");
+        require(INDEX == 0, "Cannot set INDEX again");
+        INDEX = gonsForBalance(_index);
+    }
+
+    function setgOHM(address _gOHM) external {
+        require(msg.sender == initializer, "Initializer:  caller is not initializer");
+        require(address(gOHM) == address(0), "gOHM:  gOHM already set");
+        require(_gOHM != address(0), "gOHM:  gOHM is not a valid contract");
+        gOHM = IgOHM(_gOHM);
+    }
+
+    // do this last
+    function initialize(address _stakingContract, address _treasury) external {
+        require(msg.sender == initializer, "Initializer:  caller is not initializer");
+
+        require(_stakingContract != address(0), "Staking");
+        stakingContract = _stakingContract;
+        _gonBalances[stakingContract] = TOTAL_GONS;
+
+        require(_treasury != address(0), "Zero address: Treasury");
+        treasury = _treasury;
+
+        emit Transfer(address(0x0), stakingContract, _totalSupply);
+        emit LogStakingContractUpdated(stakingContract);
+
+        initializer = address(0);
+    }
+
+    /* ========== REBASE ========== */
+
+    /**
+        @notice increases rOHM supply to increase staking balances relative to profit_
+        @param profit_ uint256
+        @return uint256
+     */
+    function rebase(uint256 profit_, uint256 epoch_) public override onlyStakingContract returns (uint256) {
+        uint256 rebaseAmount;
+        uint256 circulatingSupply_ = circulatingSupply();
+        if (profit_ == 0) {
+            emit LogSupply(epoch_, _totalSupply);
+            emit LogRebase(epoch_, 0, index());
+            return _totalSupply;
+        } else if (circulatingSupply_ > 0) {
+            rebaseAmount = profit_.mul(_totalSupply).div(circulatingSupply_);
+        } else {
+            rebaseAmount = profit_;
+        }
+
+        _totalSupply = _totalSupply.add(rebaseAmount);
+
+        if (_totalSupply > MAX_SUPPLY) {
+            _totalSupply = MAX_SUPPLY;
+        }
+
+        _gonsPerFragment = TOTAL_GONS.div(_totalSupply);
+
+        _storeRebase(circulatingSupply_, profit_, epoch_);
+
+        return _totalSupply;
+    }
+
+    /**
+        @notice emits event with data about rebase
+        @param previousCirculating_ uint
+        @param profit_ uint
+        @param epoch_ uint
+     */
+    function _storeRebase(
+        uint256 previousCirculating_,
+        uint256 profit_,
+        uint256 epoch_
+    ) internal {
+        uint256 rebasePercent = profit_.mul(1e18).div(previousCirculating_);
+        rebases.push(
+            Rebase({
+                epoch: epoch_,
+                rebase: rebasePercent, // 18 decimals
+                totalStakedBefore: previousCirculating_,
+                totalStakedAfter: circulatingSupply(),
+                amountRebased: profit_,
+                index: index(),
+                blockNumberOccured: block.number
+            })
+        );
+
+        emit LogSupply(epoch_, _totalSupply);
+        emit LogRebase(epoch_, rebasePercent, index());
+    }
+
+    /* ========== MUTATIVE FUNCTIONS =========== */
+
+    function transfer(address to, uint256 value) public override(IERC20, ERC20) returns (bool) {
+        uint256 gonValue = value.mul(_gonsPerFragment);
+
+        _gonBalances[msg.sender] = _gonBalances[msg.sender].sub(gonValue);
+        _gonBalances[to] = _gonBalances[to].add(gonValue);
+
+        require(balanceOf(msg.sender) >= debtBalances[msg.sender], "Debt: cannot transfer amount");
+        emit Transfer(msg.sender, to, value);
+        return true;
+    }
+
+    function transferFrom(
+        address from,
+        address to,
+        uint256 value
+    ) public override(IERC20, ERC20) returns (bool) {
+        _allowedValue[from][msg.sender] = _allowedValue[from][msg.sender].sub(value);
+        emit Approval(from, msg.sender, _allowedValue[from][msg.sender]);
+
+        uint256 gonValue = gonsForBalance(value);
+        _gonBalances[from] = _gonBalances[from].sub(gonValue);
+        _gonBalances[to] = _gonBalances[to].add(gonValue);
+
+        require(balanceOf(from) >= debtBalances[from], "Debt: cannot transfer amount");
+        emit Transfer(from, to, value);
+        return true;
+    }
+
+    function approve(address spender, uint256 value) public override(IERC20, ERC20) returns (bool) {
+        _approve(msg.sender, spender, value);
+        return true;
+    }
+
+    function increaseAllowance(address spender, uint256 addedValue) public override returns (bool) {
+        _approve(msg.sender, spender, _allowedValue[msg.sender][spender].add(addedValue));
+        return true;
+    }
+
+    function decreaseAllowance(address spender, uint256 subtractedValue) public override returns (bool) {
+        uint256 oldValue = _allowedValue[msg.sender][spender];
+        if (subtractedValue >= oldValue) {
+            _approve(msg.sender, spender, 0);
+        } else {
+            _approve(msg.sender, spender, oldValue.sub(subtractedValue));
+        }
+        return true;
+    }
+
+    // this function is called by the treasury, and informs sOHM of changes to debt.
+    // note that addresses with debt balances cannot transfer collateralized sOHM
+    // until the debt has been repaid.
+    function changeDebt(
+        uint256 amount,
+        address debtor,
+        bool add
+    ) external override {
+        require(msg.sender == treasury, "Only treasury");
+        if (add) {
+            debtBalances[debtor] = debtBalances[debtor].add(amount);
+        } else {
+            debtBalances[debtor] = debtBalances[debtor].sub(amount);
+        }
+        require(debtBalances[debtor] <= balanceOf(debtor), "sOHM: insufficient balance");
+    }
+
+    /* ========== INTERNAL FUNCTIONS ========== */
+
+    function _approve(
+        address owner,
+        address spender,
+        uint256 value
+    ) internal virtual override {
+        _allowedValue[owner][spender] = value;
+        emit Approval(owner, spender, value);
+    }
+
+    /* ========== VIEW FUNCTIONS ========== */
+
+    function balanceOf(address who) public view override(IERC20, ERC20) returns (uint256) {
+        return _gonBalances[who].div(_gonsPerFragment);
+    }
+
+    function gonsForBalance(uint256 amount) public view override returns (uint256) {
+        return amount.mul(_gonsPerFragment);
+    }
+
+    function balanceForGons(uint256 gons) public view override returns (uint256) {
+        return gons.div(_gonsPerFragment);
+    }
+
+    // toG converts an sOHM balance to gOHM terms. gOHM is an 18 decimal token. balance given is in 18 decimal format.
+    function toG(uint256 amount) external view override returns (uint256) {
+        return gOHM.balanceTo(amount);
+    }
+
+    // fromG converts a gOHM balance to sOHM terms. sOHM is a 9 decimal token. balance given is in 9 decimal format.
+    function fromG(uint256 amount) external view override returns (uint256) {
+        return gOHM.balanceFrom(amount);
+    }
+
+    // Staking contract holds excess sOHM
+    function circulatingSupply() public view override returns (uint256) {
+        return
+            _totalSupply.sub(balanceOf(stakingContract)).add(gOHM.balanceFrom(IERC20(address(gOHM)).totalSupply())).add(
+                IStaking(stakingContract).supplyInWarmup()
+            );
+    }
+
+    function index() public view override returns (uint256) {
+        return balanceForGons(INDEX);
+    }
+
+    function allowance(address owner_, address spender) public view override(IERC20, ERC20) returns (uint256) {
+        return _allowedValue[owner_][spender];
+    }
+}
+

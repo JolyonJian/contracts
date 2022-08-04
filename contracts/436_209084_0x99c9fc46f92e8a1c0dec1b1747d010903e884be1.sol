@@ -1,33 +1,361 @@
-{{
-  "language": "Solidity",
-  "settings": {
-    "evmVersion": "istanbul",
-    "libraries": {},
-    "metadata": {
-      "bytecodeHash": "ipfs",
-      "useLiteralContent": true
-    },
-    "optimizer": {
-      "enabled": true,
-      "runs": 200
-    },
-    "remappings": [],
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "abi"
-        ]
-      }
-    }
-  },
-  "sources": {
-    "contracts/chugsplash/L1ChugSplashProxy.sol": {
-      "content": "// SPDX-License-Identifier: MIT\npragma solidity >0.5.0 <0.8.0;\n\nimport { iL1ChugSplashDeployer } from \"./interfaces/iL1ChugSplashDeployer.sol\";\n\n/**\n * @title L1ChugSplashProxy\n * @dev Basic ChugSplash proxy contract for L1. Very close to being a normal proxy but has added\n * functions `setCode` and `setStorage` for changing the code or storage of the contract. Nifty!\n *\n * Note for future developers: do NOT make anything in this contract 'public' unless you know what\n * you're doing. Anything public can potentially have a function signature that conflicts with a\n * signature attached to the implementation contract. Public functions SHOULD always have the\n * 'proxyCallIfNotOwner' modifier unless there's some *really* good reason not to have that\n * modifier. And there almost certainly is not a good reason to not have that modifier. Beware!\n */\ncontract L1ChugSplashProxy {\n\n    /*************\n     * Constants *\n     *************/\n\n    // \"Magic\" prefix. When prepended to some arbitrary bytecode and used to create a contract, the\n    // appended bytecode will be deployed as given.\n    bytes13 constant internal DEPLOY_CODE_PREFIX = 0x600D380380600D6000396000f3;\n\n    // bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1)\n    bytes32 constant internal IMPLEMENTATION_KEY = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;\n\n    // bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1)\n    bytes32 constant internal OWNER_KEY = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;\n\n\n    /***************\n     * Constructor *\n     ***************/\n    \n    /**\n     * @param _owner Address of the initial contract owner.\n     */\n    constructor(\n        address _owner\n    ) {\n        _setOwner(_owner);\n    }\n\n\n    /**********************\n     * Function Modifiers *\n     **********************/\n\n    /**\n     * Blocks a function from being called when the parent signals that the system should be paused\n     * via an isUpgrading function.\n     */\n    modifier onlyWhenNotPaused() {\n        address owner = _getOwner();\n\n        // We do a low-level call because there's no guarantee that the owner actually *is* an\n        // L1ChugSplashDeployer contract and Solidity will throw errors if we do a normal call and\n        // it turns out that it isn't the right type of contract.\n        (bool success, bytes memory returndata) = owner.staticcall(\n            abi.encodeWithSelector(\n                iL1ChugSplashDeployer.isUpgrading.selector\n            )\n        );\n\n        // If the call was unsuccessful then we assume that there's no \"isUpgrading\" method and we\n        // can just continue as normal. We also expect that the return value is exactly 32 bytes\n        // long. If this isn't the case then we can safely ignore the result.\n        if (success && returndata.length == 32) {\n            // Although the expected value is a *boolean*, it's safer to decode as a uint256 in the\n            // case that the isUpgrading function returned something other than 0 or 1. But we only\n            // really care about the case where this value is 0 (= false).\n            uint256 ret = abi.decode(returndata, (uint256));\n            require(\n                ret == 0,\n                \"L1ChugSplashProxy: system is currently being upgraded\"\n            );\n        }\n\n        _;\n    }\n\n    /**\n     * Makes a proxy call instead of triggering the given function when the caller is either the\n     * owner or the zero address. Caller can only ever be the zero address if this function is\n     * being called off-chain via eth_call, which is totally fine and can be convenient for\n     * client-side tooling. Avoids situations where the proxy and implementation share a sighash\n     * and the proxy function ends up being called instead of the implementation one.\n     *\n     * Note: msg.sender == address(0) can ONLY be triggered off-chain via eth_call. If there's a\n     * way for someone to send a transaction with msg.sender == address(0) in any real context then\n     * we have much bigger problems. Primary reason to include this additional allowed sender is\n     * because the owner address can be changed dynamically and we do not want clients to have to\n     * keep track of the current owner in order to make an eth_call that doesn't trigger the\n     * proxied contract.\n     */\n    modifier proxyCallIfNotOwner() {\n        if (msg.sender == _getOwner() || msg.sender == address(0)) {\n            _;\n        } else {\n            // This WILL halt the call frame on completion.\n            _doProxyCall();\n        }\n    }\n\n\n    /*********************\n     * Fallback Function *\n     *********************/\n\n    fallback()\n        external\n        payable\n    {\n        // Proxy call by default.\n        _doProxyCall();\n    }\n\n\n    /********************\n     * Public Functions *\n     ********************/\n\n    /**\n     * Sets the code that should be running behind this proxy. Note that this scheme is a bit\n     * different from the standard proxy scheme where one would typically deploy the code\n     * separately and then set the implementation address. We're doing it this way because it gives\n     * us a lot more freedom on the client side. Can only be triggered by the contract owner.\n     * @param _code New contract code to run inside this contract.\n     */\n    function setCode(\n        bytes memory _code\n    )\n        proxyCallIfNotOwner\n        public\n    {\n        // Get the code hash of the current implementation.\n        address implementation = _getImplementation();\n\n        // If the code hash matches the new implementation then we return early.\n        if (keccak256(_code) == _getAccountCodeHash(implementation)) {\n            return;\n        }\n\n        // Create the deploycode by appending the magic prefix.\n        bytes memory deploycode = abi.encodePacked(\n            DEPLOY_CODE_PREFIX,\n            _code\n        );\n\n        // Deploy the code and set the new implementation address.\n        address newImplementation;\n        assembly {\n            newImplementation := create(0x0, add(deploycode, 0x20), mload(deploycode))\n        }\n\n        // Check that the code was actually deployed correctly. I'm not sure if you can ever\n        // actually fail this check. Should only happen if the contract creation from above runs\n        // out of gas but this parent execution thread does NOT run out of gas. Seems like we\n        // should be doing this check anyway though.\n        require(\n            _getAccountCodeHash(newImplementation) == keccak256(_code),\n            \"L1ChugSplashProxy: code was not correctly deployed.\"\n        );\n\n        _setImplementation(newImplementation);\n    }\n\n    /**\n     * Modifies some storage slot within the proxy contract. Gives us a lot of power to perform\n     * upgrades in a more transparent way. Only callable by the owner.\n     * @param _key Storage key to modify.\n     * @param _value New value for the storage key.\n     */\n    function setStorage(\n        bytes32 _key,\n        bytes32 _value\n    )\n        proxyCallIfNotOwner\n        public\n    {\n        assembly {\n            sstore(_key, _value)\n        }\n    }\n\n    /**\n     * Changes the owner of the proxy contract. Only callable by the owner.\n     * @param _owner New owner of the proxy contract.\n     */\n    function setOwner(\n        address _owner\n    )\n        proxyCallIfNotOwner\n        public\n    {\n        _setOwner(_owner);\n    }\n\n    /**\n     * Queries the owner of the proxy contract. Can only be called by the owner OR by making an\n     * eth_call and setting the \"from\" address to address(0).\n     * @return Owner address.\n     */\n    function getOwner()\n        proxyCallIfNotOwner\n        public\n        returns (\n            address\n        )\n    {\n        return _getOwner();\n    }\n\n    /**\n     * Queries the implementation address. Can only be called by the owner OR by making an\n     * eth_call and setting the \"from\" address to address(0).\n     * @return Implementation address.\n     */\n    function getImplementation()\n        proxyCallIfNotOwner\n        public\n        returns (\n            address\n        )\n    {\n        return _getImplementation();\n    }\n\n\n    /**********************\n     * Internal Functions *\n     **********************/\n\n    /**\n     * Sets the implementation address.\n     * @param _implementation New implementation address.\n     */\n    function _setImplementation(\n        address _implementation\n    )\n        internal\n    {\n        assembly {\n            sstore(IMPLEMENTATION_KEY, _implementation)\n        }\n    }\n\n    /**\n     * Queries the implementation address.\n     * @return Implementation address.\n     */\n    function _getImplementation()\n        internal\n        view\n        returns (\n            address\n        )\n    {\n        address implementation;\n        assembly {\n            implementation := sload(IMPLEMENTATION_KEY)\n        }\n        return implementation;\n    }\n\n    /**\n     * Changes the owner of the proxy contract.\n     * @param _owner New owner of the proxy contract.\n     */\n    function _setOwner(\n        address _owner\n    )\n        internal\n    {\n        assembly {\n            sstore(OWNER_KEY, _owner)\n        }\n    }\n\n    /**\n     * Queries the owner of the proxy contract.\n     * @return Owner address.\n     */\n    function _getOwner()\n        internal\n        view \n        returns (\n            address\n        )\n    {\n        address owner;\n        assembly {\n            owner := sload(OWNER_KEY)\n        }\n        return owner;\n    }\n\n    /**\n     * Gets the code hash for a given account.\n     * @param _account Address of the account to get a code hash for.\n     * @return Code hash for the account.\n     */\n    function _getAccountCodeHash(\n        address _account\n    )\n        internal\n        view\n        returns (\n            bytes32\n        )\n    {\n        bytes32 codeHash;\n        assembly {\n            codeHash := extcodehash(_account)\n        }\n        return codeHash;\n    }\n\n    /**\n     * Performs the proxy call via a delegatecall.\n     */\n    function _doProxyCall()\n        onlyWhenNotPaused\n        internal\n    {\n        address implementation = _getImplementation();\n\n        require(\n            implementation != address(0),\n            \"L1ChugSplashProxy: implementation is not set yet\"\n        );\n\n        assembly {\n            // Copy calldata into memory at 0x0....calldatasize.\n            calldatacopy(0x0, 0x0, calldatasize())\n\n            // Perform the delegatecall, make sure to pass all available gas.\n            let success := delegatecall(gas(), implementation, 0x0, calldatasize(), 0x0, 0x0)\n\n            // Copy returndata into memory at 0x0....returndatasize. Note that this *will*\n            // overwrite the calldata that we just copied into memory but that doesn't really\n            // matter because we'll be returning in a second anyway.\n            returndatacopy(0x0, 0x0, returndatasize())\n            \n            // Success == 0 means a revert. We'll revert too and pass the data up.\n            if iszero(success) {\n                revert(0x0, returndatasize())\n            }\n\n            // Otherwise we'll just return and pass the data up.\n            return(0x0, returndatasize())\n        }\n    }\n}\n"
-    },
-    "contracts/chugsplash/interfaces/iL1ChugSplashDeployer.sol": {
-      "content": "// SPDX-License-Identifier: MIT\npragma solidity >0.5.0 <0.8.0;\n\n/**\n * @title iL1ChugSplashDeployer\n */\ninterface iL1ChugSplashDeployer {\n    function isUpgrading()\n        external\n        view\n        returns (\n            bool\n        );\n}\n"
-    }
-  }
-}}
+// contracts/chugsplash/L1ChugSplashProxy.sol
+
+// SPDX-License-Identifier: MIT
+pragma solidity >0.5.0 <0.8.0;
+
+import { iL1ChugSplashDeployer } from "./interfaces/iL1ChugSplashDeployer.sol";
+
+/**
+ * @title L1ChugSplashProxy
+ * @dev Basic ChugSplash proxy contract for L1. Very close to being a normal proxy but has added
+ * functions `setCode` and `setStorage` for changing the code or storage of the contract. Nifty!
+ *
+ * Note for future developers: do NOT make anything in this contract 'public' unless you know what
+ * you're doing. Anything public can potentially have a function signature that conflicts with a
+ * signature attached to the implementation contract. Public functions SHOULD always have the
+ * 'proxyCallIfNotOwner' modifier unless there's some *really* good reason not to have that
+ * modifier. And there almost certainly is not a good reason to not have that modifier. Beware!
+ */
+contract L1ChugSplashProxy {
+
+    /*************
+     * Constants *
+     *************/
+
+    // "Magic" prefix. When prepended to some arbitrary bytecode and used to create a contract, the
+    // appended bytecode will be deployed as given.
+    bytes13 constant internal DEPLOY_CODE_PREFIX = 0x600D380380600D6000396000f3;
+
+    // bytes32(uint256(keccak256('eip1967.proxy.implementation')) - 1)
+    bytes32 constant internal IMPLEMENTATION_KEY = 0x360894a13ba1a3210667c828492db98dca3e2076cc3735a920a3ca505d382bbc;
+
+    // bytes32(uint256(keccak256('eip1967.proxy.admin')) - 1)
+    bytes32 constant internal OWNER_KEY = 0xb53127684a568b3173ae13b9f8a6016e243e63b6e8ee1178d6a717850b5d6103;
+
+
+    /***************
+     * Constructor *
+     ***************/
+    
+    /**
+     * @param _owner Address of the initial contract owner.
+     */
+    constructor(
+        address _owner
+    ) {
+        _setOwner(_owner);
+    }
+
+
+    /**********************
+     * Function Modifiers *
+     **********************/
+
+    /**
+     * Blocks a function from being called when the parent signals that the system should be paused
+     * via an isUpgrading function.
+     */
+    modifier onlyWhenNotPaused() {
+        address owner = _getOwner();
+
+        // We do a low-level call because there's no guarantee that the owner actually *is* an
+        // L1ChugSplashDeployer contract and Solidity will throw errors if we do a normal call and
+        // it turns out that it isn't the right type of contract.
+        (bool success, bytes memory returndata) = owner.staticcall(
+            abi.encodeWithSelector(
+                iL1ChugSplashDeployer.isUpgrading.selector
+            )
+        );
+
+        // If the call was unsuccessful then we assume that there's no "isUpgrading" method and we
+        // can just continue as normal. We also expect that the return value is exactly 32 bytes
+        // long. If this isn't the case then we can safely ignore the result.
+        if (success && returndata.length == 32) {
+            // Although the expected value is a *boolean*, it's safer to decode as a uint256 in the
+            // case that the isUpgrading function returned something other than 0 or 1. But we only
+            // really care about the case where this value is 0 (= false).
+            uint256 ret = abi.decode(returndata, (uint256));
+            require(
+                ret == 0,
+                "L1ChugSplashProxy: system is currently being upgraded"
+            );
+        }
+
+        _;
+    }
+
+    /**
+     * Makes a proxy call instead of triggering the given function when the caller is either the
+     * owner or the zero address. Caller can only ever be the zero address if this function is
+     * being called off-chain via eth_call, which is totally fine and can be convenient for
+     * client-side tooling. Avoids situations where the proxy and implementation share a sighash
+     * and the proxy function ends up being called instead of the implementation one.
+     *
+     * Note: msg.sender == address(0) can ONLY be triggered off-chain via eth_call. If there's a
+     * way for someone to send a transaction with msg.sender == address(0) in any real context then
+     * we have much bigger problems. Primary reason to include this additional allowed sender is
+     * because the owner address can be changed dynamically and we do not want clients to have to
+     * keep track of the current owner in order to make an eth_call that doesn't trigger the
+     * proxied contract.
+     */
+    modifier proxyCallIfNotOwner() {
+        if (msg.sender == _getOwner() || msg.sender == address(0)) {
+            _;
+        } else {
+            // This WILL halt the call frame on completion.
+            _doProxyCall();
+        }
+    }
+
+
+    /*********************
+     * Fallback Function *
+     *********************/
+
+    fallback()
+        external
+        payable
+    {
+        // Proxy call by default.
+        _doProxyCall();
+    }
+
+
+    /********************
+     * Public Functions *
+     ********************/
+
+    /**
+     * Sets the code that should be running behind this proxy. Note that this scheme is a bit
+     * different from the standard proxy scheme where one would typically deploy the code
+     * separately and then set the implementation address. We're doing it this way because it gives
+     * us a lot more freedom on the client side. Can only be triggered by the contract owner.
+     * @param _code New contract code to run inside this contract.
+     */
+    function setCode(
+        bytes memory _code
+    )
+        proxyCallIfNotOwner
+        public
+    {
+        // Get the code hash of the current implementation.
+        address implementation = _getImplementation();
+
+        // If the code hash matches the new implementation then we return early.
+        if (keccak256(_code) == _getAccountCodeHash(implementation)) {
+            return;
+        }
+
+        // Create the deploycode by appending the magic prefix.
+        bytes memory deploycode = abi.encodePacked(
+            DEPLOY_CODE_PREFIX,
+            _code
+        );
+
+        // Deploy the code and set the new implementation address.
+        address newImplementation;
+        assembly {
+            newImplementation := create(0x0, add(deploycode, 0x20), mload(deploycode))
+        }
+
+        // Check that the code was actually deployed correctly. I'm not sure if you can ever
+        // actually fail this check. Should only happen if the contract creation from above runs
+        // out of gas but this parent execution thread does NOT run out of gas. Seems like we
+        // should be doing this check anyway though.
+        require(
+            _getAccountCodeHash(newImplementation) == keccak256(_code),
+            "L1ChugSplashProxy: code was not correctly deployed."
+        );
+
+        _setImplementation(newImplementation);
+    }
+
+    /**
+     * Modifies some storage slot within the proxy contract. Gives us a lot of power to perform
+     * upgrades in a more transparent way. Only callable by the owner.
+     * @param _key Storage key to modify.
+     * @param _value New value for the storage key.
+     */
+    function setStorage(
+        bytes32 _key,
+        bytes32 _value
+    )
+        proxyCallIfNotOwner
+        public
+    {
+        assembly {
+            sstore(_key, _value)
+        }
+    }
+
+    /**
+     * Changes the owner of the proxy contract. Only callable by the owner.
+     * @param _owner New owner of the proxy contract.
+     */
+    function setOwner(
+        address _owner
+    )
+        proxyCallIfNotOwner
+        public
+    {
+        _setOwner(_owner);
+    }
+
+    /**
+     * Queries the owner of the proxy contract. Can only be called by the owner OR by making an
+     * eth_call and setting the "from" address to address(0).
+     * @return Owner address.
+     */
+    function getOwner()
+        proxyCallIfNotOwner
+        public
+        returns (
+            address
+        )
+    {
+        return _getOwner();
+    }
+
+    /**
+     * Queries the implementation address. Can only be called by the owner OR by making an
+     * eth_call and setting the "from" address to address(0).
+     * @return Implementation address.
+     */
+    function getImplementation()
+        proxyCallIfNotOwner
+        public
+        returns (
+            address
+        )
+    {
+        return _getImplementation();
+    }
+
+
+    /**********************
+     * Internal Functions *
+     **********************/
+
+    /**
+     * Sets the implementation address.
+     * @param _implementation New implementation address.
+     */
+    function _setImplementation(
+        address _implementation
+    )
+        internal
+    {
+        assembly {
+            sstore(IMPLEMENTATION_KEY, _implementation)
+        }
+    }
+
+    /**
+     * Queries the implementation address.
+     * @return Implementation address.
+     */
+    function _getImplementation()
+        internal
+        view
+        returns (
+            address
+        )
+    {
+        address implementation;
+        assembly {
+            implementation := sload(IMPLEMENTATION_KEY)
+        }
+        return implementation;
+    }
+
+    /**
+     * Changes the owner of the proxy contract.
+     * @param _owner New owner of the proxy contract.
+     */
+    function _setOwner(
+        address _owner
+    )
+        internal
+    {
+        assembly {
+            sstore(OWNER_KEY, _owner)
+        }
+    }
+
+    /**
+     * Queries the owner of the proxy contract.
+     * @return Owner address.
+     */
+    function _getOwner()
+        internal
+        view 
+        returns (
+            address
+        )
+    {
+        address owner;
+        assembly {
+            owner := sload(OWNER_KEY)
+        }
+        return owner;
+    }
+
+    /**
+     * Gets the code hash for a given account.
+     * @param _account Address of the account to get a code hash for.
+     * @return Code hash for the account.
+     */
+    function _getAccountCodeHash(
+        address _account
+    )
+        internal
+        view
+        returns (
+            bytes32
+        )
+    {
+        bytes32 codeHash;
+        assembly {
+            codeHash := extcodehash(_account)
+        }
+        return codeHash;
+    }
+
+    /**
+     * Performs the proxy call via a delegatecall.
+     */
+    function _doProxyCall()
+        onlyWhenNotPaused
+        internal
+    {
+        address implementation = _getImplementation();
+
+        require(
+            implementation != address(0),
+            "L1ChugSplashProxy: implementation is not set yet"
+        );
+
+        assembly {
+            // Copy calldata into memory at 0x0....calldatasize.
+            calldatacopy(0x0, 0x0, calldatasize())
+
+            // Perform the delegatecall, make sure to pass all available gas.
+            let success := delegatecall(gas(), implementation, 0x0, calldatasize(), 0x0, 0x0)
+
+            // Copy returndata into memory at 0x0....returndatasize. Note that this *will*
+            // overwrite the calldata that we just copied into memory but that doesn't really
+            // matter because we'll be returning in a second anyway.
+            returndatacopy(0x0, 0x0, returndatasize())
+            
+            // Success == 0 means a revert. We'll revert too and pass the data up.
+            if iszero(success) {
+                revert(0x0, returndatasize())
+            }
+
+            // Otherwise we'll just return and pass the data up.
+            return(0x0, returndatasize())
+        }
+    }
+}
+
+

@@ -1,1 +1,414 @@
-{"MinimeToken.sol":{"content":"pragma solidity \u003e=0.5.8 \u003c0.7.0;\n\n/*\n    Adapted version of the MinimeToken (commit ea04d950eea153a04c51fa510b068b9dded390cb):\n    https://github.com/Giveth/minime\n\n    Upgraded to be compatible to solidity 0.5.8 (use of address/address payable,\n    explicit types, emit events, view instead of constant, etc.). In addition,\n    some functional changes were made:\n    - Remove token factory and clone method, as they are not necessary to create\n      clones.\n    - Remove fallback function.\n    - Use OpenZeppelin Ownable instead of controller.\n    - Remove token controller conditionless transfer rights.\n    - Remove approve and call functionality.\n    - Remove burn function and mark generateTokens internal.\n*/\n\n/*\n    Copyright 2016, Jordi Baylina\n\n    This program is free software: you can redistribute it and/or modify\n    it under the terms of the GNU General Public License as published by\n    the Free Software Foundation, either version 3 of the License, or\n    (at your option) any later version.\n\n    This program is distributed in the hope that it will be useful,\n    but WITHOUT ANY WARRANTY; without even the implied warranty of\n    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the\n    GNU General Public License for more details.\n\n    You should have received a copy of the GNU General Public License\n    along with this program.  If not, see \u003chttp://www.gnu.org/licenses/\u003e.\n */\n\n\nimport \"./Ownable.sol\";\n\ncontract ERC20 {\n    function allowance(address owner, address spender) public view returns (uint256);\n    function transferFrom(address from, address to, uint256 value) public returns (bool);\n    function approve(address spender, uint256 value) public returns (bool);\n    function totalSupply() public view returns (uint256);\n    function balanceOf(address who) public view returns (uint256);\n    function transfer(address to, uint256 value) public returns (bool);\n    event Approval(address indexed owner, address indexed spender, uint256 value);\n    event Transfer(address indexed from, address indexed to, uint256 value);\n}\n\n/// @title MiniMeToken Contract\n/// @author Jordi Baylina\n/// @dev This token contract\u0027s goal is to make it easy for anyone to clone this\n///  token using the token distribution at a given block, this will allow DAO\u0027s\n///  and DApps to upgrade their features in a decentralized manner without\n///  affecting the original token\n/// @dev It is ERC20 compliant, but still needs to under go further testing.\n\n/// @dev The actual token contract, the default controller is the msg.sender\n///  that deploys the contract, so usually this token will be deployed by a\n///  token controller contract, which Giveth will call a \"Campaign\"\ncontract MiniMeToken is ERC20, Ownable {\n    string public name;                //The Token\u0027s name: e.g. DigixDAO Tokens\n    uint8 public decimals;             //Number of decimals of the smallest unit\n    string public symbol;              //An identifier: e.g. REP\n    string public version = \"MMT_0.2\"; //An arbitrary versioning scheme\n\n    /// @dev `Checkpoint` is the structure that attaches a block number to a\n    ///  given value, the block number attached is the one that last changed the\n    ///  value\n    struct  Checkpoint {\n        // `fromBlock` is the block number that the value was generated from\n        uint128 fromBlock;\n        // `value` is the amount of tokens at a specific block number\n        uint128 value;\n    }\n\n    // `parentToken` is the Token address that was cloned to produce this token;\n    //  it will be 0x0 for a token that was not cloned\n    MiniMeToken public parentToken;\n\n    // `parentSnapShotBlock` is the block number from the Parent Token that was\n    //  used to determine the initial distribution of the Clone Token\n    uint256 public parentSnapShotBlock;\n\n    // `creationBlock` is the block number that the Clone Token was created\n    uint256 public creationBlock;\n\n    // `balances` is the map that tracks the balance of each address, in this\n    //  contract when the balance changes the block number that the change\n    //  occurred is also included in the map\n    mapping (address =\u003e Checkpoint[]) balances;\n\n    // `allowed` tracks any extra transfer rights as in all ERC20 tokens\n    mapping (address =\u003e mapping (address =\u003e uint256)) allowed;\n\n    // Tracks the history of the `totalSupply` of the token\n    Checkpoint[] totalSupplyHistory;\n\n    // Flag that determines if the token is transferable or not.\n    bool public transfersEnabled;\n\n////////////////\n// Constructor\n////////////////\n\n    /// @notice Constructor to create a MiniMeToken\n    /// @param _parentToken Address of the parent token, set to 0x0 if it is a\n    ///  new token\n    /// @param _parentSnapShotBlock Block of the parent token that will\n    ///  determine the initial distribution of the clone token, set to 0 if it\n    ///  is a new token\n    /// @param _tokenName Name of the new token\n    /// @param _decimalUnits Number of decimals of the new token\n    /// @param _tokenSymbol Token Symbol for the new token\n    /// @param _transfersEnabled If true, tokens will be able to be transferred\n    constructor(\n        address _parentToken,\n        uint256 _parentSnapShotBlock,\n        string memory _tokenName,\n        uint8 _decimalUnits,\n        string memory _tokenSymbol,\n        bool _transfersEnabled\n    ) public {\n        name = _tokenName;                                 // Set the name\n        decimals = _decimalUnits;                          // Set the decimals\n        symbol = _tokenSymbol;                             // Set the symbol\n        parentToken = MiniMeToken(_parentToken);\n        parentSnapShotBlock = _parentSnapShotBlock;\n        transfersEnabled = _transfersEnabled;\n        creationBlock = block.number;\n    }\n\n///////////////////\n// ERC20 Methods\n///////////////////\n\n    /// @notice Send `_amount` tokens to `_to` from `msg.sender`\n    /// @param _to The address of the recipient\n    /// @param _amount The amount of tokens to be transferred\n    /// @return Whether the transfer was successful or not\n    function transfer(address _to, uint256 _amount) public returns (bool success) {\n        require(transfersEnabled);\n        doTransfer(msg.sender, _to, _amount);\n        return true;\n    }\n\n    /// @notice Send `_amount` tokens to `_to` from `_from` on the condition it\n    ///  is approved by `_from`\n    /// @param _from The address holding the tokens being transferred\n    /// @param _to The address of the recipient\n    /// @param _amount The amount of tokens to be transferred\n    /// @return True if the transfer was successful\n    function transferFrom(address _from, address _to, uint256 _amount\n    ) public returns (bool success) {\n        require(transfersEnabled);\n\n        require(allowed[_from][msg.sender] \u003e= _amount);\n        allowed[_from][msg.sender] -= _amount;\n\n        doTransfer(_from, _to, _amount);\n        return true;\n    }\n\n    /// @dev This is the actual transfer function in the token contract, it can\n    ///  only be called by other functions in this contract.\n    /// @param _from The address holding the tokens being transferred\n    /// @param _to The address of the recipient\n    /// @param _amount The amount of tokens to be transferred\n    /// @return True if the transfer was successful\n    function doTransfer(address _from, address _to, uint256 _amount\n    ) internal {\n        if (_amount == 0) {\n            emit Transfer(_from, _to, _amount);    // Follow the spec to log the event when transfer 0\n            return;\n        }\n\n        require(parentSnapShotBlock \u003c block.number);\n\n        // Do not allow transfer to 0x0 or the token contract itself\n        require((_to != address(0)) \u0026\u0026 (_to != address(this)));\n\n        // If the amount being transfered is more than the balance of the\n        //  account the transfer throws\n        uint256 previousBalanceFrom = balanceOfAt(_from, block.number);\n        require(previousBalanceFrom \u003e= _amount);\n\n        // First update the balance array with the new value for the address\n        //  sending the tokens\n        updateValueAtNow(balances[_from], previousBalanceFrom - _amount);\n\n        // Then update the balance array with the new value for the address\n        //  receiving the tokens\n        uint256 previousBalanceTo = balanceOfAt(_to, block.number);\n        require(previousBalanceTo + _amount \u003e= previousBalanceTo); // Check for overflow\n        updateValueAtNow(balances[_to], previousBalanceTo + _amount);\n\n        // An event to make the transfer easy to find on the blockchain\n        emit Transfer(_from, _to, _amount);\n    }\n\n    /// @param _owner The address that\u0027s balance is being requested\n    /// @return The balance of `_owner` at the current block\n    function balanceOf(address _owner) public view returns (uint256 balance) {\n        return balanceOfAt(_owner, block.number);\n    }\n\n    /// @notice `msg.sender` approves `_spender` to spend `_amount` tokens on\n    ///  its behalf. This is a modified version of the ERC20 approve function\n    ///  to be a little bit safer\n    /// @param _spender The address of the account able to transfer the tokens\n    /// @param _amount The amount of tokens to be approved for transfer\n    /// @return True if the approval was successful\n    function approve(address _spender, uint256 _amount) public returns (bool success) {\n        require(transfersEnabled);\n\n        // To change the approve amount you first have to reduce the addresses`\n        //  allowance to zero by calling `approve(_spender,0)` if it is not\n        //  already 0 to mitigate the race condition described here:\n        //  https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729\n        require((_amount == 0) || (allowed[msg.sender][_spender] == 0));\n\n        allowed[msg.sender][_spender] = _amount;\n        emit Approval(msg.sender, _spender, _amount);\n        return true;\n    }\n\n    /// @dev This function makes it easy to read the `allowed[]` map\n    /// @param _owner The address of the account that owns the token\n    /// @param _spender The address of the account able to transfer the tokens\n    /// @return Amount of remaining tokens of _owner that _spender is allowed\n    ///  to spend\n    function allowance(address _owner, address _spender\n    ) public view returns (uint256 remaining) {\n        return allowed[_owner][_spender];\n    }\n\n    /// @dev This function makes it easy to get the total number of tokens\n    /// @return The total number of tokens\n    function totalSupply() public view returns (uint256) {\n        return totalSupplyAt(block.number);\n    }\n\n////////////////\n// Query balance and totalSupply in History\n////////////////\n\n    /// @dev Queries the balance of `_owner` at a specific `_blockNumber`\n    /// @param _owner The address from which the balance will be retrieved\n    /// @param _blockNumber The block number when the balance is queried\n    /// @return The balance at `_blockNumber`\n    function balanceOfAt(address _owner, uint256 _blockNumber) public view\n        returns (uint256) {\n\n        // These next few lines are used when the balance of the token is\n        //  requested before a check point was ever created for this token, it\n        //  requires that the `parentToken.balanceOfAt` be queried at the\n        //  genesis block for that token as this contains initial balance of\n        //  this token\n        if ((balances[_owner].length == 0)\n            || (balances[_owner][0].fromBlock \u003e _blockNumber)) {\n            if (address(parentToken) != address(0)) {\n                return parentToken.balanceOfAt(_owner, min(_blockNumber, parentSnapShotBlock));\n            } else {\n                // Has no parent\n                return 0;\n            }\n\n        // This will return the expected balance during normal situations\n        } else {\n            return getValueAt(balances[_owner], _blockNumber);\n        }\n    }\n\n    /// @notice Total amount of tokens at a specific `_blockNumber`.\n    /// @param _blockNumber The block number when the totalSupply is queried\n    /// @return The total amount of tokens at `_blockNumber`\n    function totalSupplyAt(uint256 _blockNumber) public view returns(uint256) {\n        // These next few lines are used when the totalSupply of the token is\n        //  requested before a check point was ever created for this token, it\n        //  requires that the `parentToken.totalSupplyAt` be queried at the\n        //  genesis block for this token as that contains totalSupply of this\n        //  token at this block number.\n        if ((totalSupplyHistory.length == 0)\n            || (totalSupplyHistory[0].fromBlock \u003e _blockNumber)) {\n            if (address(parentToken) != address(0)) {\n                return parentToken.totalSupplyAt(min(_blockNumber, parentSnapShotBlock));\n            } else {\n                return 0;\n            }\n\n        // This will return the expected totalSupply during normal situations\n        } else {\n            return getValueAt(totalSupplyHistory, _blockNumber);\n        }\n    }\n\n////////////////\n// Mint tokens\n////////////////\n\n    /// @notice Generates `_amount` tokens that are assigned to `_owner`\n    /// @param _owner The address that will be assigned the new tokens\n    /// @param _amount The quantity of tokens generated\n    /// @return True if the tokens are generated correctly\n    function generateTokens(address _owner, uint256 _amount\n    ) internal returns (bool) {\n        uint256 curTotalSupply = totalSupply();\n        require(curTotalSupply + _amount \u003e= curTotalSupply); // Check for overflow\n        uint256 previousBalanceTo = balanceOf(_owner);\n        require(previousBalanceTo + _amount \u003e= previousBalanceTo); // Check for overflow\n        updateValueAtNow(totalSupplyHistory, curTotalSupply + _amount);\n        updateValueAtNow(balances[_owner], previousBalanceTo + _amount);\n        emit Transfer(address(0), _owner, _amount);\n        return true;\n    }\n\n////////////////\n// Enable tokens transfers\n////////////////\n\n    /// @notice Enables token holders to transfer their tokens freely if true\n    /// @param _transfersEnabled True if transfers are allowed in the clone\n    function enableTransfers(bool _transfersEnabled) public onlyOwner {\n        transfersEnabled = _transfersEnabled;\n    }\n\n////////////////\n// Internal helper functions to query and set a value in a snapshot array\n////////////////\n\n    /// @dev `getValueAt` retrieves the number of tokens at a given block number\n    /// @param checkpoints The history of values being queried\n    /// @param _block The block number to retrieve the value at\n    /// @return The number of tokens being queried\n    function getValueAt(Checkpoint[] storage checkpoints, uint256 _block\n    ) view internal returns (uint256) {\n        if (checkpoints.length == 0) return 0;\n\n        // Shortcut for the actual value\n        if (_block \u003e= checkpoints[checkpoints.length-1].fromBlock)\n            return checkpoints[checkpoints.length-1].value;\n        if (_block \u003c checkpoints[0].fromBlock) return 0;\n\n        // Binary search of the value in the array\n        uint256 min = 0;\n        uint256 max = checkpoints.length-1;\n        while (max \u003e min) {\n            uint256 mid = (max + min + 1) / 2;\n            if (checkpoints[mid].fromBlock \u003c= _block) {\n                min = mid;\n            } else {\n                max = mid - 1;\n            }\n        }\n        return checkpoints[min].value;\n    }\n\n    /// @dev `updateValueAtNow` used to update the `balances` map and the\n    ///  `totalSupplyHistory`\n    /// @param checkpoints The history of data being updated\n    /// @param _value The new number of tokens\n    function updateValueAtNow(Checkpoint[] storage checkpoints, uint256 _value\n    ) internal  {\n        if ((checkpoints.length == 0) || (checkpoints[checkpoints.length - 1].fromBlock \u003c block.number)) {\n            Checkpoint storage newCheckPoint = checkpoints[checkpoints.length++];\n            newCheckPoint.fromBlock = uint128(block.number);\n            newCheckPoint.value = uint128(_value);\n        } else {\n            Checkpoint storage oldCheckPoint = checkpoints[checkpoints.length-1];\n            oldCheckPoint.value = uint128(_value);\n        }\n    }\n\n    /// @dev Helper function to return a min betwen the two uints\n    function min(uint256 a, uint256 b) internal pure returns (uint256) {\n        return a \u003c b ? a : b;\n    }\n\n//////////\n// Safety Methods\n//////////\n\n    /// @notice This method can be used by the controller to extract mistakenly\n    ///  sent tokens to this contract.\n    /// @param _token The address of the token contract that you want to recover\n    ///  set to 0 in case you want to extract ether.\n    function claimTokens(address _token) public onlyOwner {\n        if (_token == address(0x0)) {\n            owner().transfer(address(this).balance);\n            return;\n        }\n\n        MiniMeToken token = MiniMeToken(_token);\n        uint256 balance = token.balanceOf(address(this));\n        token.transfer(owner(), balance);\n        emit ClaimedTokens(_token, owner(), balance);\n    }\n\n////////////////\n// Events\n////////////////\n\n    event ClaimedTokens(address indexed _token, address indexed _controller, uint256 _amount);\n    event Transfer(address indexed _from, address indexed _to, uint256 _amount);\n    event Approval(\n        address indexed _owner,\n        address indexed _spender,\n        uint256 _amount\n    );\n\n}"},"Ownable.sol":{"content":"pragma solidity ^0.5.0;\n\n/*\n    From OpenZeppelin (commit 7934612):\n    https://github.com/OpenZeppelin/openzeppelin-solidity/blob/master/contracts/ownership/Ownable.sol\n*/\n\n/**\n * @dev Contract module which provides a basic access control mechanism, where\n * there is an account (an owner) that can be granted exclusive access to\n * specific functions.\n *\n * This module is used through inheritance. It will make available the modifier\n * `onlyOwner`, which can be applied to your functions to restrict their use to\n * the owner.\n */\ncontract Ownable {\n    address payable private _owner;\n\n    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);\n\n    /**\n     * @dev Initializes the contract setting the deployer as the initial owner.\n     */\n    constructor () internal {\n        _owner = msg.sender;\n        emit OwnershipTransferred(address(0), _owner);\n    }\n\n    /**\n     * @dev Returns the address of the current owner.\n     */\n    function owner() public view returns (address payable) {\n        return _owner;\n    }\n\n    /**\n     * @dev Throws if called by any account other than the owner.\n     */\n    modifier onlyOwner() {\n        require(isOwner(), \"Ownable: caller is not the owner\");\n        _;\n    }\n\n    /**\n     * @dev Returns true if the caller is the current owner.\n     */\n    function isOwner() public view returns (bool) {\n        return msg.sender == _owner;\n    }\n\n    /**\n     * @dev Leaves the contract without owner. It will not be possible to call\n     * `onlyOwner` functions anymore. Can only be called by the current owner.\n     *\n     * \u003e Note: Renouncing ownership will leave the contract without an owner,\n     * thereby removing any functionality that is only available to the owner.\n     */\n    function renounceOwnership() public onlyOwner {\n        emit OwnershipTransferred(_owner, address(0));\n        _owner = address(0);\n    }\n\n    /**\n     * @dev Transfers ownership of the contract to a new account (`newOwner`).\n     * Can only be called by the current owner.\n     */\n    function transferOwnership(address payable newOwner) public onlyOwner {\n        _transferOwnership(newOwner);\n    }\n\n    /**\n     * @dev Transfers ownership of the contract to a new account (`newOwner`).\n     */\n    function _transferOwnership(address payable newOwner) internal {\n        require(newOwner != address(0), \"Ownable: new owner is the zero address\");\n        emit OwnershipTransferred(_owner, newOwner);\n        _owner = newOwner;\n    }\n}\n"},"StonToken.sol":{"content":"pragma solidity \u003e=0.5.8 \u003c0.7.0;\n\nimport \"./MinimeToken.sol\";\n\n\ncontract StonToken is MiniMeToken {\n    uint256 public constant maxSupply = 370 * 10**6 * 10**8;\n\n    bool public mintingDone = false;\n\n    // whitelist state\n    address public whitelistManager;\n    mapping(address =\u003e bool) public whitelist;\n\n    event WhitelistEdit(address indexed subject, bool indexed status);\n    event WhitelistManagerChange(address indexed manager);\n\n    constructor() public MiniMeToken(\n        address(0), // no parent token\n        0,          // no snapshot block number\n        \"STON\",     // token name\n        8,          // decimals\n        \"STON\",     // symbol\n        false       // disable transfers for minting\n    ) {\n        whitelistManager = msg.sender;\n        emit WhitelistManagerChange(msg.sender);\n    }\n\n    // minting functionality\n\n    function mint(address[] memory _recipients, uint256[] memory _amounts) public onlyOwner {\n        require(!mintingDone);\n        require(_recipients.length == _amounts.length);\n        require(_recipients.length \u003c 255);\n\n        for (uint8 i = 0; i \u003c _recipients.length; i++) {\n            address recipient = _recipients[i];\n            uint256 amount = _amounts[i];\n\n            require(generateTokens(recipient, amount));\n        }\n    }\n\n    function finishMinting() public onlyOwner {\n        require(!mintingDone);\n\n        // check hard cap\n        assert(totalSupply() \u003c= maxSupply);\n\n        enableTransfers(true);\n        mintingDone = true;\n    }\n\n    // whitelist functionality\n\n    function addWhitelist(address _subject) public returns (bool) {\n        return modifyWhitelist(_subject, true);\n    }\n\n    function removeWhitelist(address _subject) public returns (bool) {\n        return modifyWhitelist(_subject, false);\n    }\n\n    function modifyWhitelist(address _subject, bool _status) internal returns (bool) {\n        require(msg.sender == whitelistManager, \"Only the whitelist manager can edit it.\");\n\n        if (_status == whitelist[_subject]) {\n            // no change to whitelist\n            return false;\n        }\n\n        whitelist[_subject] = _status;\n        emit WhitelistEdit(_subject, _status);\n        return true;\n    }\n\n    function modifyWhitelistMultiple(address[] memory _subjects, bool _status) public {\n        require(msg.sender == whitelistManager, \"Only the whitelist manager can edit it.\");\n        require(_subjects.length \u003c 255);\n\n        for (uint8 i = 0; i \u003c _subjects.length; i++) {\n            address subject = _subjects[i];\n            // note: does not check the current whitelist state (like modifyWhitelist)\n            //       to save gas - consequently the function always emits an event, even\n            //       if the whitelist status of an address does not change\n            whitelist[subject] = _status;\n            emit WhitelistEdit(subject, _status);\n        }\n    }\n\n    function changeWhitelistManager(address _manager) public onlyOwner {\n        whitelistManager = _manager;\n        emit WhitelistManagerChange(_manager);\n    }\n}\n"}}
+// MinimeToken.sol
+
+pragma solidity >=0.5.8 <0.7.0;
+
+/*
+    Adapted version of the MinimeToken (commit ea04d950eea153a04c51fa510b068b9dded390cb):
+    https://github.com/Giveth/minime
+
+    Upgraded to be compatible to solidity 0.5.8 (use of address/address payable,
+    explicit types, emit events, view instead of constant, etc.). In addition,
+    some functional changes were made:
+    - Remove token factory and clone method, as they are not necessary to create
+      clones.
+    - Remove fallback function.
+    - Use OpenZeppelin Ownable instead of controller.
+    - Remove token controller conditionless transfer rights.
+    - Remove approve and call functionality.
+    - Remove burn function and mark generateTokens internal.
+*/
+
+/*
+    Copyright 2016, Jordi Baylina
+
+    This program is free software: you can redistribute it and/or modify
+    it under the terms of the GNU General Public License as published by
+    the Free Software Foundation, either version 3 of the License, or
+    (at your option) any later version.
+
+    This program is distributed in the hope that it will be useful,
+    but WITHOUT ANY WARRANTY; without even the implied warranty of
+    MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+    GNU General Public License for more details.
+
+    You should have received a copy of the GNU General Public License
+    along with this program.  If not, see <http://www.gnu.org/licenses/>.
+ */
+
+
+import "./Ownable.sol";
+
+contract ERC20 {
+    function allowance(address owner, address spender) public view returns (uint256);
+    function transferFrom(address from, address to, uint256 value) public returns (bool);
+    function approve(address spender, uint256 value) public returns (bool);
+    function totalSupply() public view returns (uint256);
+    function balanceOf(address who) public view returns (uint256);
+    function transfer(address to, uint256 value) public returns (bool);
+    event Approval(address indexed owner, address indexed spender, uint256 value);
+    event Transfer(address indexed from, address indexed to, uint256 value);
+}
+
+/// @title MiniMeToken Contract
+/// @author Jordi Baylina
+/// @dev This token contract's goal is to make it easy for anyone to clone this
+///  token using the token distribution at a given block, this will allow DAO's
+///  and DApps to upgrade their features in a decentralized manner without
+///  affecting the original token
+/// @dev It is ERC20 compliant, but still needs to under go further testing.
+
+/// @dev The actual token contract, the default controller is the msg.sender
+///  that deploys the contract, so usually this token will be deployed by a
+///  token controller contract, which Giveth will call a "Campaign"
+contract MiniMeToken is ERC20, Ownable {
+    string public name;                //The Token's name: e.g. DigixDAO Tokens
+    uint8 public decimals;             //Number of decimals of the smallest unit
+    string public symbol;              //An identifier: e.g. REP
+    string public version = "MMT_0.2"; //An arbitrary versioning scheme
+
+    /// @dev `Checkpoint` is the structure that attaches a block number to a
+    ///  given value, the block number attached is the one that last changed the
+    ///  value
+    struct  Checkpoint {
+        // `fromBlock` is the block number that the value was generated from
+        uint128 fromBlock;
+        // `value` is the amount of tokens at a specific block number
+        uint128 value;
+    }
+
+    // `parentToken` is the Token address that was cloned to produce this token;
+    //  it will be 0x0 for a token that was not cloned
+    MiniMeToken public parentToken;
+
+    // `parentSnapShotBlock` is the block number from the Parent Token that was
+    //  used to determine the initial distribution of the Clone Token
+    uint256 public parentSnapShotBlock;
+
+    // `creationBlock` is the block number that the Clone Token was created
+    uint256 public creationBlock;
+
+    // `balances` is the map that tracks the balance of each address, in this
+    //  contract when the balance changes the block number that the change
+    //  occurred is also included in the map
+    mapping (address => Checkpoint[]) balances;
+
+    // `allowed` tracks any extra transfer rights as in all ERC20 tokens
+    mapping (address => mapping (address => uint256)) allowed;
+
+    // Tracks the history of the `totalSupply` of the token
+    Checkpoint[] totalSupplyHistory;
+
+    // Flag that determines if the token is transferable or not.
+    bool public transfersEnabled;
+
+////////////////
+// Constructor
+////////////////
+
+    /// @notice Constructor to create a MiniMeToken
+    /// @param _parentToken Address of the parent token, set to 0x0 if it is a
+    ///  new token
+    /// @param _parentSnapShotBlock Block of the parent token that will
+    ///  determine the initial distribution of the clone token, set to 0 if it
+    ///  is a new token
+    /// @param _tokenName Name of the new token
+    /// @param _decimalUnits Number of decimals of the new token
+    /// @param _tokenSymbol Token Symbol for the new token
+    /// @param _transfersEnabled If true, tokens will be able to be transferred
+    constructor(
+        address _parentToken,
+        uint256 _parentSnapShotBlock,
+        string memory _tokenName,
+        uint8 _decimalUnits,
+        string memory _tokenSymbol,
+        bool _transfersEnabled
+    ) public {
+        name = _tokenName;                                 // Set the name
+        decimals = _decimalUnits;                          // Set the decimals
+        symbol = _tokenSymbol;                             // Set the symbol
+        parentToken = MiniMeToken(_parentToken);
+        parentSnapShotBlock = _parentSnapShotBlock;
+        transfersEnabled = _transfersEnabled;
+        creationBlock = block.number;
+    }
+
+///////////////////
+// ERC20 Methods
+///////////////////
+
+    /// @notice Send `_amount` tokens to `_to` from `msg.sender`
+    /// @param _to The address of the recipient
+    /// @param _amount The amount of tokens to be transferred
+    /// @return Whether the transfer was successful or not
+    function transfer(address _to, uint256 _amount) public returns (bool success) {
+        require(transfersEnabled);
+        doTransfer(msg.sender, _to, _amount);
+        return true;
+    }
+
+    /// @notice Send `_amount` tokens to `_to` from `_from` on the condition it
+    ///  is approved by `_from`
+    /// @param _from The address holding the tokens being transferred
+    /// @param _to The address of the recipient
+    /// @param _amount The amount of tokens to be transferred
+    /// @return True if the transfer was successful
+    function transferFrom(address _from, address _to, uint256 _amount
+    ) public returns (bool success) {
+        require(transfersEnabled);
+
+        require(allowed[_from][msg.sender] >= _amount);
+        allowed[_from][msg.sender] -= _amount;
+
+        doTransfer(_from, _to, _amount);
+        return true;
+    }
+
+    /// @dev This is the actual transfer function in the token contract, it can
+    ///  only be called by other functions in this contract.
+    /// @param _from The address holding the tokens being transferred
+    /// @param _to The address of the recipient
+    /// @param _amount The amount of tokens to be transferred
+    /// @return True if the transfer was successful
+    function doTransfer(address _from, address _to, uint256 _amount
+    ) internal {
+        if (_amount == 0) {
+            emit Transfer(_from, _to, _amount);    // Follow the spec to log the event when transfer 0
+            return;
+        }
+
+        require(parentSnapShotBlock < block.number);
+
+        // Do not allow transfer to 0x0 or the token contract itself
+        require((_to != address(0)) && (_to != address(this)));
+
+        // If the amount being transfered is more than the balance of the
+        //  account the transfer throws
+        uint256 previousBalanceFrom = balanceOfAt(_from, block.number);
+        require(previousBalanceFrom >= _amount);
+
+        // First update the balance array with the new value for the address
+        //  sending the tokens
+        updateValueAtNow(balances[_from], previousBalanceFrom - _amount);
+
+        // Then update the balance array with the new value for the address
+        //  receiving the tokens
+        uint256 previousBalanceTo = balanceOfAt(_to, block.number);
+        require(previousBalanceTo + _amount >= previousBalanceTo); // Check for overflow
+        updateValueAtNow(balances[_to], previousBalanceTo + _amount);
+
+        // An event to make the transfer easy to find on the blockchain
+        emit Transfer(_from, _to, _amount);
+    }
+
+    /// @param _owner The address that's balance is being requested
+    /// @return The balance of `_owner` at the current block
+    function balanceOf(address _owner) public view returns (uint256 balance) {
+        return balanceOfAt(_owner, block.number);
+    }
+
+    /// @notice `msg.sender` approves `_spender` to spend `_amount` tokens on
+    ///  its behalf. This is a modified version of the ERC20 approve function
+    ///  to be a little bit safer
+    /// @param _spender The address of the account able to transfer the tokens
+    /// @param _amount The amount of tokens to be approved for transfer
+    /// @return True if the approval was successful
+    function approve(address _spender, uint256 _amount) public returns (bool success) {
+        require(transfersEnabled);
+
+        // To change the approve amount you first have to reduce the addresses`
+        //  allowance to zero by calling `approve(_spender,0)` if it is not
+        //  already 0 to mitigate the race condition described here:
+        //  https://github.com/ethereum/EIPs/issues/20#issuecomment-263524729
+        require((_amount == 0) || (allowed[msg.sender][_spender] == 0));
+
+        allowed[msg.sender][_spender] = _amount;
+        emit Approval(msg.sender, _spender, _amount);
+        return true;
+    }
+
+    /// @dev This function makes it easy to read the `allowed[]` map
+    /// @param _owner The address of the account that owns the token
+    /// @param _spender The address of the account able to transfer the tokens
+    /// @return Amount of remaining tokens of _owner that _spender is allowed
+    ///  to spend
+    function allowance(address _owner, address _spender
+    ) public view returns (uint256 remaining) {
+        return allowed[_owner][_spender];
+    }
+
+    /// @dev This function makes it easy to get the total number of tokens
+    /// @return The total number of tokens
+    function totalSupply() public view returns (uint256) {
+        return totalSupplyAt(block.number);
+    }
+
+////////////////
+// Query balance and totalSupply in History
+////////////////
+
+    /// @dev Queries the balance of `_owner` at a specific `_blockNumber`
+    /// @param _owner The address from which the balance will be retrieved
+    /// @param _blockNumber The block number when the balance is queried
+    /// @return The balance at `_blockNumber`
+    function balanceOfAt(address _owner, uint256 _blockNumber) public view
+        returns (uint256) {
+
+        // These next few lines are used when the balance of the token is
+        //  requested before a check point was ever created for this token, it
+        //  requires that the `parentToken.balanceOfAt` be queried at the
+        //  genesis block for that token as this contains initial balance of
+        //  this token
+        if ((balances[_owner].length == 0)
+            || (balances[_owner][0].fromBlock > _blockNumber)) {
+            if (address(parentToken) != address(0)) {
+                return parentToken.balanceOfAt(_owner, min(_blockNumber, parentSnapShotBlock));
+            } else {
+                // Has no parent
+                return 0;
+            }
+
+        // This will return the expected balance during normal situations
+        } else {
+            return getValueAt(balances[_owner], _blockNumber);
+        }
+    }
+
+    /// @notice Total amount of tokens at a specific `_blockNumber`.
+    /// @param _blockNumber The block number when the totalSupply is queried
+    /// @return The total amount of tokens at `_blockNumber`
+    function totalSupplyAt(uint256 _blockNumber) public view returns(uint256) {
+        // These next few lines are used when the totalSupply of the token is
+        //  requested before a check point was ever created for this token, it
+        //  requires that the `parentToken.totalSupplyAt` be queried at the
+        //  genesis block for this token as that contains totalSupply of this
+        //  token at this block number.
+        if ((totalSupplyHistory.length == 0)
+            || (totalSupplyHistory[0].fromBlock > _blockNumber)) {
+            if (address(parentToken) != address(0)) {
+                return parentToken.totalSupplyAt(min(_blockNumber, parentSnapShotBlock));
+            } else {
+                return 0;
+            }
+
+        // This will return the expected totalSupply during normal situations
+        } else {
+            return getValueAt(totalSupplyHistory, _blockNumber);
+        }
+    }
+
+////////////////
+// Mint tokens
+////////////////
+
+    /// @notice Generates `_amount` tokens that are assigned to `_owner`
+    /// @param _owner The address that will be assigned the new tokens
+    /// @param _amount The quantity of tokens generated
+    /// @return True if the tokens are generated correctly
+    function generateTokens(address _owner, uint256 _amount
+    ) internal returns (bool) {
+        uint256 curTotalSupply = totalSupply();
+        require(curTotalSupply + _amount >= curTotalSupply); // Check for overflow
+        uint256 previousBalanceTo = balanceOf(_owner);
+        require(previousBalanceTo + _amount >= previousBalanceTo); // Check for overflow
+        updateValueAtNow(totalSupplyHistory, curTotalSupply + _amount);
+        updateValueAtNow(balances[_owner], previousBalanceTo + _amount);
+        emit Transfer(address(0), _owner, _amount);
+        return true;
+    }
+
+////////////////
+// Enable tokens transfers
+////////////////
+
+    /// @notice Enables token holders to transfer their tokens freely if true
+    /// @param _transfersEnabled True if transfers are allowed in the clone
+    function enableTransfers(bool _transfersEnabled) public onlyOwner {
+        transfersEnabled = _transfersEnabled;
+    }
+
+////////////////
+// Internal helper functions to query and set a value in a snapshot array
+////////////////
+
+    /// @dev `getValueAt` retrieves the number of tokens at a given block number
+    /// @param checkpoints The history of values being queried
+    /// @param _block The block number to retrieve the value at
+    /// @return The number of tokens being queried
+    function getValueAt(Checkpoint[] storage checkpoints, uint256 _block
+    ) view internal returns (uint256) {
+        if (checkpoints.length == 0) return 0;
+
+        // Shortcut for the actual value
+        if (_block >= checkpoints[checkpoints.length-1].fromBlock)
+            return checkpoints[checkpoints.length-1].value;
+        if (_block < checkpoints[0].fromBlock) return 0;
+
+        // Binary search of the value in the array
+        uint256 min = 0;
+        uint256 max = checkpoints.length-1;
+        while (max > min) {
+            uint256 mid = (max + min + 1) / 2;
+            if (checkpoints[mid].fromBlock <= _block) {
+                min = mid;
+            } else {
+                max = mid - 1;
+            }
+        }
+        return checkpoints[min].value;
+    }
+
+    /// @dev `updateValueAtNow` used to update the `balances` map and the
+    ///  `totalSupplyHistory`
+    /// @param checkpoints The history of data being updated
+    /// @param _value The new number of tokens
+    function updateValueAtNow(Checkpoint[] storage checkpoints, uint256 _value
+    ) internal  {
+        if ((checkpoints.length == 0) || (checkpoints[checkpoints.length - 1].fromBlock < block.number)) {
+            Checkpoint storage newCheckPoint = checkpoints[checkpoints.length++];
+            newCheckPoint.fromBlock = uint128(block.number);
+            newCheckPoint.value = uint128(_value);
+        } else {
+            Checkpoint storage oldCheckPoint = checkpoints[checkpoints.length-1];
+            oldCheckPoint.value = uint128(_value);
+        }
+    }
+
+    /// @dev Helper function to return a min betwen the two uints
+    function min(uint256 a, uint256 b) internal pure returns (uint256) {
+        return a < b ? a : b;
+    }
+
+//////////
+// Safety Methods
+//////////
+
+    /// @notice This method can be used by the controller to extract mistakenly
+    ///  sent tokens to this contract.
+    /// @param _token The address of the token contract that you want to recover
+    ///  set to 0 in case you want to extract ether.
+    function claimTokens(address _token) public onlyOwner {
+        if (_token == address(0x0)) {
+            owner().transfer(address(this).balance);
+            return;
+        }
+
+        MiniMeToken token = MiniMeToken(_token);
+        uint256 balance = token.balanceOf(address(this));
+        token.transfer(owner(), balance);
+        emit ClaimedTokens(_token, owner(), balance);
+    }
+
+////////////////
+// Events
+////////////////
+
+    event ClaimedTokens(address indexed _token, address indexed _controller, uint256 _amount);
+    event Transfer(address indexed _from, address indexed _to, uint256 _amount);
+    event Approval(
+        address indexed _owner,
+        address indexed _spender,
+        uint256 _amount
+    );
+
+}
+

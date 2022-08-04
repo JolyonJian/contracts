@@ -1,29 +1,369 @@
-{{
-  "language": "Solidity",
-  "sources": {
-    "/contracts/BubblehouseNFTV3.sol": {
-      "content": "// SPDX-License-Identifier: MIT\npragma solidity ^0.8.0;\n\ncontract OwnableDelegateProxy {}\n// Used to delegate ownership of a contract to another address, to save on unneeded transactions to approve contract use for users\ncontract OpenSeaProxyRegistry {\n    mapping(address => OwnableDelegateProxy) public proxies;\n}\n\ninterface IERC165 {\n    function supportsInterface(bytes4 interfaceId) external view returns (bool);\n}\n\ninterface IERC721 is IERC165 {\n    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);\n    event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);\n    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);\n\n    function balanceOf(address owner) external view returns (uint256 balance);\n    function ownerOf(uint256 tokenId) external view returns (address owner);\n    function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;\n    function safeTransferFrom(address from, address to, uint256 tokenId) external;\n    function transferFrom(address from, address to, uint256 tokenId) external;\n\n    function approve(address to, uint256 tokenId) external;\n    function setApprovalForAll(address operator, bool _approved) external;\n    function getApproved(uint256 tokenId) external view returns (address operator);\n    function isApprovedForAll(address owner, address operator) external view returns (bool);\n}\n\ninterface IERC721Metadata is IERC721 {\n    function name() external view returns (string memory);\n    function symbol() external view returns (string memory);\n    function tokenURI(uint256 tokenId) external view returns (string memory);\n}\n\ncontract BubblehouseNFT3 is IERC165, IERC721, IERC721Metadata {\n\n    // --- Init ---\n\n    constructor(string memory name_, address openSeaProxyRegistryAddress_, string memory baseURI_, address sharedWallet_) {\n        _name = name_;\n        _owner = msg.sender;\n        openSeaProxyRegistryAddress = openSeaProxyRegistryAddress_;\n        isOpenSeaEnabled = (openSeaProxyRegistryAddress_ != address(0));\n        _baseURI = baseURI_;\n        if (sharedWallet_ != address(0)) {\n            _isMinter[sharedWallet_] = true;\n        }\n    }\n\n\n    // --- Name and symbol ---\n\n    string private _name;\n\n    function name() public view override returns (string memory) {\n        return _name;\n    }\n\n    function symbol() public pure override returns (string memory) {\n        return \"BUBBLENFT3\";\n    }\n\n\n    // --- ERC165 ---\n\n    function supportsInterface(bytes4 interfaceId) public pure override returns (bool) {\n        return\n            interfaceId == type(IERC721).interfaceId ||\n            interfaceId == type(IERC721Metadata).interfaceId ||\n            interfaceId == type(IERC165).interfaceId;\n    }\n\n\n    // --- Delegation ---\n\n    function _msgSender() internal view returns (address) {\n        // TODO: support for OpenSea's metatransactions?\n        return msg.sender;\n    }\n\n\n    // --- Balances ----\n\n    // owner address => token count\n    mapping(address => uint256) private _balances;\n\n    function balanceOf(address owner) public view override returns (uint256) {\n        require(owner != address(0), \"ZERO_ADDR\");\n        return _balances[owner];\n    }\n\n\n    // --- Owners ---\n\n    // token ID => owner address\n    mapping(uint256 => address) private _owners;\n\n    function ownerOf(uint256 tokenId) public view override returns (address) {\n        address owner = _owners[tokenId];\n        require(owner != address(0), \"INVALID_TOKEN\");\n        return owner;\n    }\n\n    function _exists(uint256 tokenId) internal view returns (bool) {\n        return _owners[tokenId] != address(0);\n    }\n\n\n\n    // --- Approvals ---\n\n    // token ID => approved address\n    mapping(uint256 => address) private _tokenApprovals;\n\n    // owner => operator approvals\n    mapping(address => mapping(address => bool)) private _operatorApprovals;\n\n    function approve(address to, uint256 tokenId) public override {\n        address owner = ownerOf(tokenId);\n        require(to != owner, \"IDEMPOTENT\");\n        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), \"Forbidden\");\n        _approve(to, tokenId);\n    }\n\n    function getApproved(uint256 tokenId) public view override returns (address) {\n        require(_exists(tokenId), \"INVALID_TOKEN\");\n        return _tokenApprovals[tokenId];\n    }\n\n    function setApprovalForAll(address operator, bool approved) public override {\n        _setApprovalForAll(_msgSender(), operator, approved);\n    }\n\n    function isApprovedForAll(address owner, address operator) public view override returns (bool) {\n        return _operatorApprovals[owner][operator] || isOpenSeaOperator(owner, operator);\n    }\n\n    function _approve(address to, uint256 tokenId) internal {\n        _tokenApprovals[tokenId] = to;\n        emit Approval(ownerOf(tokenId), to, tokenId);\n    }\n\n    function _clearApproval(uint256 tokenId) internal {\n        _approve(address(0), tokenId);\n    }\n\n    function _setApprovalForAll(address owner, address operator, bool approved) internal {\n        require(owner != operator, \"IDEMPOTENT\");\n        _operatorApprovals[owner][operator] = approved;\n        emit ApprovalForAll(owner, operator, approved);\n    }\n\n\n    // --- OpenSea ---\n\n    bool public isOpenSeaEnabled = true;\n    address public openSeaProxyRegistryAddress;\n\n    function isOpenSeaOperator(address owner, address operator) internal view returns (bool) {\n        if (!isOpenSeaEnabled) {\n            return false;\n        }\n        OpenSeaProxyRegistry proxyRegistry = OpenSeaProxyRegistry(openSeaProxyRegistryAddress);\n        return (address(proxyRegistry.proxies(owner)) == operator);\n    }\n\n    function setOpenSeaEnabled(bool enabled) external onlyOwner {\n        isOpenSeaEnabled = enabled;\n    }\n\n    function setOpenSeaProxyRegistryAddress(address addr) external onlyOwner {\n        openSeaProxyRegistryAddress = addr;\n    }\n\n\n    // -- Access checks ---\n\n    // Returns whether `spender` is allowed to manage `tokenId`.\n    function _isApprovedOrOwner(address spender, uint256 tokenId) internal view returns (bool) {\n        address owner = _owners[tokenId];\n        return (spender == owner || isApprovedForAll(owner, spender) || getApproved(tokenId) == spender);\n    }\n\n\n    // --- Metadata ---\n\n    string private _baseURI;\n\n    function setBaseURI(string memory newBaseURI) public onlyOwner {\n        _baseURI = newBaseURI;\n    }\n\n    function baseTokenURI() public view returns (string memory) {\n        return _baseURI;\n    }\n\n    function tokenURI(uint256 tokenId) public view override returns (string memory) {\n        require(_exists(tokenId), \"INVALID_TOKEN\");\n        return string(abi.encodePacked(_baseURI, intToString(tokenId)));\n    }\n\n\n\n    // --- Minting ---\n\n    function mint(address to, uint256 tokenId) public onlyMinter {\n        _mint(to, tokenId);\n    }\n\n    function _mint(address to, uint256 tokenId) internal {\n        require(to != address(0), \"ZERO_ADDR\");\n\n        address owner = _owners[tokenId];\n        if (owner != address(0)) {\n            if (owner == to) {\n                revert(\"IDEMPOTENT\");\n            }\n            revert(\"TOKEN_EXISTS\");\n        }\n\n        _beforeTokenTransfer(address(0), to, tokenId);\n\n        unchecked { _balances[to] += 1; }\n        _owners[tokenId] = to;\n\n        emit Transfer(address(0), to, tokenId);\n\n        _afterTokenTransfer(address(0), to, tokenId);\n    }\n\n\n    // --- Transfers ---\n\n    function transferFrom(address from, address to, uint256 tokenId) public override {\n        require(_isApprovedOrOwner(_msgSender(), tokenId), \"FORBIDDEN\");\n        _transfer(from, to, tokenId);\n    }\n\n    function safeTransferFrom(address from, address to, uint256 tokenId) public override {\n        transferFrom(from, to, tokenId);\n    }\n\n    function safeTransferFrom(address from, address to, uint256 tokenId, bytes memory /*data*/) public override {\n        transferFrom(from, to, tokenId);\n    }\n\n    function _transfer(address from, address to, uint256 tokenId) internal {\n        require(_owners[tokenId] == from, \"FORBIDDEN\");\n        require(to != address(0), \"ZERO_ADDR\");\n\n        _beforeTokenTransfer(from, to, tokenId);\n\n        _clearApproval(tokenId);\n\n        unchecked {\n            _balances[from] -= 1;\n            _balances[to] += 1;\n        }\n        _owners[tokenId] = to;\n\n        emit Transfer(from, to, tokenId);\n\n        _afterTokenTransfer(from, to, tokenId);\n    }\n\n\n    // --- Burn ---\n\n    function burn(uint256 tokenId) public {\n        address owner = _owners[tokenId];\n        if (owner == address(0)) {\n            revert(\"ALREADY_BURNED\");\n        }\n        require(_isApprovedOrOwner(_msgSender(), tokenId), \"FORBIDDEN\");\n        _burn(tokenId);\n    }\n\n    function _burn(uint256 tokenId) internal {\n        address owner = ownerOf(tokenId);\n\n        _beforeTokenTransfer(owner, address(0), tokenId);\n\n        _clearApproval(tokenId);\n\n        unchecked {\n            _balances[owner] -= 1;\n        }\n        delete _owners[tokenId];\n\n        emit Transfer(owner, address(0), tokenId);\n\n        _afterTokenTransfer(owner, address(0), tokenId);\n    }\n\n\n    // --- Hooks ---\n    //\n    // Zero `from` is mint, zero `to` is burn.\n\n    function _beforeTokenTransfer(address from, address to, uint256 tokenId) internal {}\n    function _afterTokenTransfer(address from, address to, uint256 tokenId) internal {}\n\n\n    // --- Ownership ---\n\n    address private _owner;\n\n    modifier onlyOwner() {\n        require(_owner == msg.sender, \"FORBIDDEN\");\n        _;\n    }\n\n    function getOwner() public view returns (address) {\n        return _owner;\n    }\n\n    function transferOwnership(address newOwner) public onlyOwner {\n        require(newOwner != address(0), \"ZERO_ADDR\");\n        _owner = newOwner;\n    }\n\n\n    // --- Minters ---\n\n    mapping(address => bool) private _isMinter;\n\n    modifier onlyMinter() {\n        require(_isMinter[msg.sender], \"FORBIDDEN\");\n        _;\n    }\n\n    function setMinter(address addr, bool authorized) external onlyOwner {\n        require(addr != address(0), \"ZERO_ADDR\");\n        _isMinter[addr] = authorized;\n    }\n\n\n    // --- Utils ---\n    \n    // From @openzeppelin/contracts/utils/Strings.sol\n    function intToString(uint256 value) internal pure returns (string memory) {\n        // Inspired by OraclizeAPI's implementation - MIT licence\n        // https://github.com/oraclize/ethereum-api/blob/b42146b063c7d6ee1358846c198246239e9360e8/oraclizeAPI_0.4.25.sol\n\n        if (value == 0) {\n            return \"0\";\n        }\n        uint256 temp = value;\n        uint256 digits;\n        while (temp != 0) {\n            digits++;\n            temp /= 10;\n        }\n        bytes memory buffer = new bytes(digits);\n        while (value != 0) {\n            digits -= 1;\n            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));\n            value /= 10;\n        }\n        return string(buffer);\n    }\n\n}\n"
-    }
-  },
-  "settings": {
-    "remappings": [],
-    "optimizer": {
-      "enabled": true,
-      "runs": 200
-    },
-    "evmVersion": "constantinople",
-    "libraries": {},
-    "outputSelection": {
-      "*": {
-        "*": [
-          "evm.bytecode",
-          "evm.deployedBytecode",
-          "devdoc",
-          "userdoc",
-          "metadata",
-          "abi"
-        ]
-      }
-    }
-  }
-}}
+// /contracts/BubblehouseNFTV3.sol
+
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.0;
+
+contract OwnableDelegateProxy {}
+// Used to delegate ownership of a contract to another address, to save on unneeded transactions to approve contract use for users
+contract OpenSeaProxyRegistry {
+    mapping(address => OwnableDelegateProxy) public proxies;
+}
+
+interface IERC165 {
+    function supportsInterface(bytes4 interfaceId) external view returns (bool);
+}
+
+interface IERC721 is IERC165 {
+    event Transfer(address indexed from, address indexed to, uint256 indexed tokenId);
+    event Approval(address indexed owner, address indexed approved, uint256 indexed tokenId);
+    event ApprovalForAll(address indexed owner, address indexed operator, bool approved);
+
+    function balanceOf(address owner) external view returns (uint256 balance);
+    function ownerOf(uint256 tokenId) external view returns (address owner);
+    function safeTransferFrom(address from, address to, uint256 tokenId, bytes calldata data) external;
+    function safeTransferFrom(address from, address to, uint256 tokenId) external;
+    function transferFrom(address from, address to, uint256 tokenId) external;
+
+    function approve(address to, uint256 tokenId) external;
+    function setApprovalForAll(address operator, bool _approved) external;
+    function getApproved(uint256 tokenId) external view returns (address operator);
+    function isApprovedForAll(address owner, address operator) external view returns (bool);
+}
+
+interface IERC721Metadata is IERC721 {
+    function name() external view returns (string memory);
+    function symbol() external view returns (string memory);
+    function tokenURI(uint256 tokenId) external view returns (string memory);
+}
+
+contract BubblehouseNFT3 is IERC165, IERC721, IERC721Metadata {
+
+    // --- Init ---
+
+    constructor(string memory name_, address openSeaProxyRegistryAddress_, string memory baseURI_, address sharedWallet_) {
+        _name = name_;
+        _owner = msg.sender;
+        openSeaProxyRegistryAddress = openSeaProxyRegistryAddress_;
+        isOpenSeaEnabled = (openSeaProxyRegistryAddress_ != address(0));
+        _baseURI = baseURI_;
+        if (sharedWallet_ != address(0)) {
+            _isMinter[sharedWallet_] = true;
+        }
+    }
+
+
+    // --- Name and symbol ---
+
+    string private _name;
+
+    function name() public view override returns (string memory) {
+        return _name;
+    }
+
+    function symbol() public pure override returns (string memory) {
+        return "BUBBLENFT3";
+    }
+
+
+    // --- ERC165 ---
+
+    function supportsInterface(bytes4 interfaceId) public pure override returns (bool) {
+        return
+            interfaceId == type(IERC721).interfaceId ||
+            interfaceId == type(IERC721Metadata).interfaceId ||
+            interfaceId == type(IERC165).interfaceId;
+    }
+
+
+    // --- Delegation ---
+
+    function _msgSender() internal view returns (address) {
+        // TODO: support for OpenSea's metatransactions?
+        return msg.sender;
+    }
+
+
+    // --- Balances ----
+
+    // owner address => token count
+    mapping(address => uint256) private _balances;
+
+    function balanceOf(address owner) public view override returns (uint256) {
+        require(owner != address(0), "ZERO_ADDR");
+        return _balances[owner];
+    }
+
+
+    // --- Owners ---
+
+    // token ID => owner address
+    mapping(uint256 => address) private _owners;
+
+    function ownerOf(uint256 tokenId) public view override returns (address) {
+        address owner = _owners[tokenId];
+        require(owner != address(0), "INVALID_TOKEN");
+        return owner;
+    }
+
+    function _exists(uint256 tokenId) internal view returns (bool) {
+        return _owners[tokenId] != address(0);
+    }
+
+
+
+    // --- Approvals ---
+
+    // token ID => approved address
+    mapping(uint256 => address) private _tokenApprovals;
+
+    // owner => operator approvals
+    mapping(address => mapping(address => bool)) private _operatorApprovals;
+
+    function approve(address to, uint256 tokenId) public override {
+        address owner = ownerOf(tokenId);
+        require(to != owner, "IDEMPOTENT");
+        require(_msgSender() == owner || isApprovedForAll(owner, _msgSender()), "Forbidden");
+        _approve(to, tokenId);
+    }
+
+    function getApproved(uint256 tokenId) public view override returns (address) {
+        require(_exists(tokenId), "INVALID_TOKEN");
+        return _tokenApprovals[tokenId];
+    }
+
+    function setApprovalForAll(address operator, bool approved) public override {
+        _setApprovalForAll(_msgSender(), operator, approved);
+    }
+
+    function isApprovedForAll(address owner, address operator) public view override returns (bool) {
+        return _operatorApprovals[owner][operator] || isOpenSeaOperator(owner, operator);
+    }
+
+    function _approve(address to, uint256 tokenId) internal {
+        _tokenApprovals[tokenId] = to;
+        emit Approval(ownerOf(tokenId), to, tokenId);
+    }
+
+    function _clearApproval(uint256 tokenId) internal {
+        _approve(address(0), tokenId);
+    }
+
+    function _setApprovalForAll(address owner, address operator, bool approved) internal {
+        require(owner != operator, "IDEMPOTENT");
+        _operatorApprovals[owner][operator] = approved;
+        emit ApprovalForAll(owner, operator, approved);
+    }
+
+
+    // --- OpenSea ---
+
+    bool public isOpenSeaEnabled = true;
+    address public openSeaProxyRegistryAddress;
+
+    function isOpenSeaOperator(address owner, address operator) internal view returns (bool) {
+        if (!isOpenSeaEnabled) {
+            return false;
+        }
+        OpenSeaProxyRegistry proxyRegistry = OpenSeaProxyRegistry(openSeaProxyRegistryAddress);
+        return (address(proxyRegistry.proxies(owner)) == operator);
+    }
+
+    function setOpenSeaEnabled(bool enabled) external onlyOwner {
+        isOpenSeaEnabled = enabled;
+    }
+
+    function setOpenSeaProxyRegistryAddress(address addr) external onlyOwner {
+        openSeaProxyRegistryAddress = addr;
+    }
+
+
+    // -- Access checks ---
+
+    // Returns whether `spender` is allowed to manage `tokenId`.
+    function _isApprovedOrOwner(address spender, uint256 tokenId) internal view returns (bool) {
+        address owner = _owners[tokenId];
+        return (spender == owner || isApprovedForAll(owner, spender) || getApproved(tokenId) == spender);
+    }
+
+
+    // --- Metadata ---
+
+    string private _baseURI;
+
+    function setBaseURI(string memory newBaseURI) public onlyOwner {
+        _baseURI = newBaseURI;
+    }
+
+    function baseTokenURI() public view returns (string memory) {
+        return _baseURI;
+    }
+
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        require(_exists(tokenId), "INVALID_TOKEN");
+        return string(abi.encodePacked(_baseURI, intToString(tokenId)));
+    }
+
+
+
+    // --- Minting ---
+
+    function mint(address to, uint256 tokenId) public onlyMinter {
+        _mint(to, tokenId);
+    }
+
+    function _mint(address to, uint256 tokenId) internal {
+        require(to != address(0), "ZERO_ADDR");
+
+        address owner = _owners[tokenId];
+        if (owner != address(0)) {
+            if (owner == to) {
+                revert("IDEMPOTENT");
+            }
+            revert("TOKEN_EXISTS");
+        }
+
+        _beforeTokenTransfer(address(0), to, tokenId);
+
+        unchecked { _balances[to] += 1; }
+        _owners[tokenId] = to;
+
+        emit Transfer(address(0), to, tokenId);
+
+        _afterTokenTransfer(address(0), to, tokenId);
+    }
+
+
+    // --- Transfers ---
+
+    function transferFrom(address from, address to, uint256 tokenId) public override {
+        require(_isApprovedOrOwner(_msgSender(), tokenId), "FORBIDDEN");
+        _transfer(from, to, tokenId);
+    }
+
+    function safeTransferFrom(address from, address to, uint256 tokenId) public override {
+        transferFrom(from, to, tokenId);
+    }
+
+    function safeTransferFrom(address from, address to, uint256 tokenId, bytes memory /*data*/) public override {
+        transferFrom(from, to, tokenId);
+    }
+
+    function _transfer(address from, address to, uint256 tokenId) internal {
+        require(_owners[tokenId] == from, "FORBIDDEN");
+        require(to != address(0), "ZERO_ADDR");
+
+        _beforeTokenTransfer(from, to, tokenId);
+
+        _clearApproval(tokenId);
+
+        unchecked {
+            _balances[from] -= 1;
+            _balances[to] += 1;
+        }
+        _owners[tokenId] = to;
+
+        emit Transfer(from, to, tokenId);
+
+        _afterTokenTransfer(from, to, tokenId);
+    }
+
+
+    // --- Burn ---
+
+    function burn(uint256 tokenId) public {
+        address owner = _owners[tokenId];
+        if (owner == address(0)) {
+            revert("ALREADY_BURNED");
+        }
+        require(_isApprovedOrOwner(_msgSender(), tokenId), "FORBIDDEN");
+        _burn(tokenId);
+    }
+
+    function _burn(uint256 tokenId) internal {
+        address owner = ownerOf(tokenId);
+
+        _beforeTokenTransfer(owner, address(0), tokenId);
+
+        _clearApproval(tokenId);
+
+        unchecked {
+            _balances[owner] -= 1;
+        }
+        delete _owners[tokenId];
+
+        emit Transfer(owner, address(0), tokenId);
+
+        _afterTokenTransfer(owner, address(0), tokenId);
+    }
+
+
+    // --- Hooks ---
+    //
+    // Zero `from` is mint, zero `to` is burn.
+
+    function _beforeTokenTransfer(address from, address to, uint256 tokenId) internal {}
+    function _afterTokenTransfer(address from, address to, uint256 tokenId) internal {}
+
+
+    // --- Ownership ---
+
+    address private _owner;
+
+    modifier onlyOwner() {
+        require(_owner == msg.sender, "FORBIDDEN");
+        _;
+    }
+
+    function getOwner() public view returns (address) {
+        return _owner;
+    }
+
+    function transferOwnership(address newOwner) public onlyOwner {
+        require(newOwner != address(0), "ZERO_ADDR");
+        _owner = newOwner;
+    }
+
+
+    // --- Minters ---
+
+    mapping(address => bool) private _isMinter;
+
+    modifier onlyMinter() {
+        require(_isMinter[msg.sender], "FORBIDDEN");
+        _;
+    }
+
+    function setMinter(address addr, bool authorized) external onlyOwner {
+        require(addr != address(0), "ZERO_ADDR");
+        _isMinter[addr] = authorized;
+    }
+
+
+    // --- Utils ---
+    
+    // From @openzeppelin/contracts/utils/Strings.sol
+    function intToString(uint256 value) internal pure returns (string memory) {
+        // Inspired by OraclizeAPI's implementation - MIT licence
+        // https://github.com/oraclize/ethereum-api/blob/b42146b063c7d6ee1358846c198246239e9360e8/oraclizeAPI_0.4.25.sol
+
+        if (value == 0) {
+            return "0";
+        }
+        uint256 temp = value;
+        uint256 digits;
+        while (temp != 0) {
+            digits++;
+            temp /= 10;
+        }
+        bytes memory buffer = new bytes(digits);
+        while (value != 0) {
+            digits -= 1;
+            buffer[digits] = bytes1(uint8(48 + uint256(value % 10)));
+            value /= 10;
+        }
+        return string(buffer);
+    }
+
+}
+
+
