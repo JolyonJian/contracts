@@ -1,4 +1,4 @@
-# Contracts(WIP)
+# Contracts
 
 #### 介绍
 
@@ -23,36 +23,67 @@ Vyper语言编写的合约共计86个，编号如下：
 9103 9191
 ```
 
-#### 注：
-
-目前根据代码相似度对top1000的合约进行了分类，分类结果在`groups/`下
+目前根据代码相似度对top1000的合约进行了分类(无源码合约舍弃)，共分为431组，分类结果在`groups/`下
 
 目录下文件命名方式为`不相似度(与该组编号最小的合约)_调用次数排名(降序)-调用次数-合约地址.sol/.vy`
 
-#### 部分结果
+对合约分析的标注结果见`group_info.xlsx`
 
-对TOP100合约的分类和功能描述情况详见`contract_info.xlsx`
+#### 分析结果
+
+1. 对TOP100合约的分类和功能描述情况详见`contract_info.xlsx`
 
 数量及分类如下：
+
 ```
-Token: 41个，代币合约，包括ERC20和非ERC20代币
-DEX: 20个，去中心化交易所
+Token: 45个，代币合约，包括ERC20和非ERC20代币
+DEX: 19个，去中心化交易所
 MEV Bot: 8个，套利机器人，地址多以0x000000...开头，可能为了减少gas费用
-NFTM: 2个， OpenSea NFT交易市场
+NFTM: 3个， OpenSea NFT交易市场
 ICO: 3个，众筹合约，均疑似庞氏骗局
 GAME: 2个，EasyClub金融游戏，Dice2Win博彩游戏
+Bridge: 2个，侧链桥
 NFT: 1个，CryptoKitties
-其他类型单独标注
+其他类型单独标注 包括Proxy, Registrar等
 ```
+
 Top1合约调用次数占比13.99%
-
+	
 Top10合约调用次数占比累计37.49%，第9个合约起，每个合约调用次数占比＜1%
-
+	
 Top100合约调用次数占比累计57.67%
-
+	
 Top637合约调用次数占比累计75.73%，第638个合约起，每个合约的调用次数占比≤0.01%
 
+2. TOP1000分析
+	
+主要合约类型及数量：
 
-获取过程及详细数据见https://github.com/JolyonJian/tx-analysis
+| 类型 | 组数量 | 合约数量 |
+| :-: | :-: | :-: |
+|Token|268|725|
+|DEX|46|62|
+|Proxy|11|24|
+|Oracle|3|18|
+|GAME|10|13|
+|DeFi|10|10|
+|Bridge|6|8|
+|ICO|6|7|
+|MEV Bot|6|6|
+|NFT|5|6|
+|NFTM|4|5|
+|Registrar|4|4|
+|Stake|3|4|
+|Auction|3|3|
+|Library|3|3|
+|ReentrancyGuard|1|1|
+|...|...|...|
 
-数据获取时间截止到2022年7月27日
+分组结果较为准确，一些短合约（几行，一行编译器版本，一行contract*{）分组结果有些偏差，组内合约相似性不大，但这部分数量很少。
+	
+大量的Token合约格式： 引入库和标准合约`SafeMath, Ownable, ERC20Basic`，基于此建立子类`ERC20, BasicToken, StandardToken,  UpgradedStandardToken`，最后继承出自己的代币`XXXToken`，多组代币合约间存在相似性。
+
+----
+
+合约获取时间截止到2022年7月27日，合约获取、分析过程及详细数据见https://github.com/JolyonJian/tx-analysis
+
