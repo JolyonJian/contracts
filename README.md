@@ -7,7 +7,7 @@
 其中1906个合约(20.64%)没有公开源码，对Top100的合约通过反编译的方式获取源码(使用[Online Solidity Decompiler](https://ethervm.io/decompile)编译为Solidity，使用[Panoramix decompiler](https://etherscan.io/bytecode-decompiler)编译为Vyper，当字节码过长时会失败)，其中，编号21、36的合约反编译失败，编号55、70的合约反编译为`Vyper`语言，目前剩余1883个合约无源代码，文件为空。
 
 
-合约源码位于contracts目录下，部分合约使用Vyper语言编写，命名规则为`"调用次数排名(降序)-调用次数-合约地址.sol/.vy"`
+合约源码位于`contracts`目录下，部分合约使用Vyper语言编写，命名规则为`"调用次数排名(降序)-调用次数-合约地址.sol/.vy"`
 
 Vyper语言编写的合约共计86个，编号如下：
 ```
